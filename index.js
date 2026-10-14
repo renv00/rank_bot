@@ -1,4 +1,13 @@
-import { Client, GatewayIntentBits, Partials, EmbedBuilder } from "discord.js";
+import {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
+} from "discord.js";
 import {
   player,
   ensure,
@@ -16,9 +25,8 @@ import {
   activeGame,
   completeGame,
 } from "./db.js";
-import { placementRank, rxp, NEXT } from "./ranking.js";
 
-// 1. Global Uncaught Error Handlers
+// Global error handlers
 process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
 });
@@ -29,7 +37,6 @@ process.on("uncaughtException", (err) => {
 
 console.log("Starting bot...");
 
-// 2. Initialize Discord Client
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -40,13 +47,56 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
-// 3. Ready Event
 client.once("ready", () => {
   console.log(`✅ Logged in successfully as ${client.user.tag}! Bot is online.`);
 });
 
-// 4. Slash Command Handler
+// Active game lobbies held in memory before match initialization
+const activeLobbies = new Map();
+
 client.on("interactionCreate", async (interaction) => {
+  // Handle "Join" button clicks
+  if (interaction.isButton()) {
+    if (interaction.customId.startsWith("join_game_")) {
+      const gameId = interaction.customId.replace("join_game_", "");
+      const lobby = activeLobbies.get(gameId);
+
+      if (!lobby) {
+        return interaction.reply({ content: "This game lobby no longer exists.", ephemeral: true });
+      }
+
+      if (lobby.players.some((p) => p.id === interaction.user.id)) {
+        return interaction.reply({ content: "You are already in this game!", ephemeral: true });
+      }
+
+      // Add joining player
+      lobby.players.push({ id: interaction.user.id, username: interaction.user.username });
+
+      // Update Embed & Counter
+      const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+        .setDescription(`----------------------------------------\n\nWaiting for players to join...\n\n**Players (${lobby.players.length}/${lobby.maxPlayers}):**\n` +
+          lobby.players.map((p, i) => `${i + 1}. <@${p.id}>`).join("\n"));
+
+      const isFull = lobby.players.length >= lobby.maxPlayers;
+
+      const updatedRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`join_game_${gameId}`)
+          .setLabel(isFull ? "Game Full" : "Join")
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(isFull)
+      );
+
+      await interaction.update({ embeds: [updatedEmbed], components: [updatedRow] });
+
+      if (isFull) {
+        activeLobbies.delete(gameId);
+        await interaction.followUp({ content: `🎮 **Game #${gameId} is ready!** All players have joined.` });
+      }
+    }
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName, options, user } = interaction;
@@ -55,29 +105,39 @@ client.on("interactionCreate", async (interaction) => {
     /* ---------------- /startgame ---------------- */
     if (commandName === "startgame") {
       await interaction.deferReply();
+
       const rawT1 = options.getString("team1", true);
       const rawT2 = options.getString("team2", true);
 
       const t1Names = rawT1.split(",").map((s) => s.trim()).filter(Boolean);
       const t2Names = rawT2.split(",").map((s) => s.trim()).filter(Boolean);
 
-      const players = [
-        ...t1Names.map((name) => ({ userId: user.id, username: name, team: 1 })),
-        ...t2Names.map((name) => ({ userId: user.id, username: name, team: 2 })),
-      ];
+      const maxPlayers = t1Names.length + t2Names.length;
+      const gameId = Date.now().toString().slice(-6);
 
-      const game = createGame(user.id, players);
-      await interaction.editReply(`🎮 **Game #${game.id} started!**\n**Team 1:** ${t1Names.join(", ")}\n**Team 2:** ${t2Names.join(", ")}`);
-    }
+      // Store lobby in memory
+      activeLobbies.set(gameId, {
+        host: user.id,
+        maxPlayers: maxPlayers || 2,
+        players: [{ id: user.id, username: user.username }],
+      });
 
-    /* ---------------- /submit ---------------- */
-    else if (commandName === "submit") {
-      await interaction.deferReply();
-      const username = options.getString("username", true);
-      const screenshot = options.getAttachment("screenshot", true);
-      
-      ensure(user.id);
-      await interaction.editReply(`✅ Match result submitted for **${username}**! Image recorded.`);
+      // Build Pending Game Embed
+      const embed = new EmbedBuilder()
+        .setTitle("Pending game")
+        .setColor(0x2b2d31)
+        .setDescription(
+          `----------------------------------------\n\nWaiting for players to join...\n\n**Players (1/${maxPlayers || 2}):**\n1. <@${user.id}>`
+        );
+
+      const joinButton = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`join_game_${gameId}`)
+          .setLabel("Join")
+          .setStyle(ButtonStyle.Success)
+      );
+
+      await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
     /* ---------------- /stats ---------------- */
@@ -99,22 +159,6 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ embeds: [embed] });
     }
 
-    /* ---------------- /rm ---------------- */
-    else if (commandName === "rm") {
-      const targetUser = options.getUser("user") || user;
-      const matches = recent(targetUser.id);
-
-      if (!matches.length) {
-        return interaction.reply({ content: `No recent matches found for ${targetUser.username}.`, ephemeral: true });
-      }
-
-      const list = matches
-        .map((m) => `• **ID #${m.id}**: Score ${m.score_for}-${m.score_against} | K/D/A: ${m.kills}/${m.deaths}/${m.assists} | RXP: +${m.rxp}`)
-        .join("\n");
-
-      await interaction.reply({ content: `**Recent Matches for ${targetUser.username}:**\n${list}` });
-    }
-
     /* ---------------- /lb ---------------- */
     else if (commandName === "lb") {
       const top = leaderboard();
@@ -130,51 +174,6 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: `🏆 **Ranked Leaderboard**\n${list}` });
     }
 
-    /* ---------------- /setrank ---------------- */
-    else if (commandName === "setrank") {
-      const targetUser = options.getUser("user", true);
-      const newRank = options.getString("rank", true);
-
-      ensure(targetUser.id);
-      patch(targetUser.id, { rank: newRank });
-
-      await interaction.reply({ content: `Updated rank for <@${targetUser.id}> to **${newRank}**.` });
-    }
-
-    /* ---------------- /setrating ---------------- */
-    else if (commandName === "setrating") {
-      const targetUser = options.getUser("user", true);
-      const newRating = options.getNumber("rating", true);
-
-      ensure(targetUser.id);
-      patch(targetUser.id, { rating: newRating });
-
-      await interaction.reply({ content: `Updated rating for <@${targetUser.id}> to **${newRating}**.` });
-    }
-
-    /* ---------------- /giverxp ---------------- */
-    else if (commandName === "giverxp") {
-      const targetUser = options.getUser("user", true);
-      const amount = options.getInteger("amount", true);
-
-      const p = ensure(targetUser.id);
-      patch(targetUser.id, { rxp: p.rxp + amount });
-
-      await interaction.reply({ content: `Gave **${amount} RXP** to <@${targetUser.id}>. Total: **${p.rxp + amount}**.` });
-    }
-
-    /* ---------------- /removerxp ---------------- */
-    else if (commandName === "removerxp") {
-      const targetUser = options.getUser("user", true);
-      const amount = options.getInteger("amount", true);
-
-      const p = ensure(targetUser.id);
-      const newRxp = Math.max(0, p.rxp - amount);
-      patch(targetUser.id, { rxp: newRxp });
-
-      await interaction.reply({ content: `Removed **${amount} RXP** from <@${targetUser.id}>. Total: **${newRxp}**.` });
-    }
-
     /* ---------------- /reset ---------------- */
     else if (commandName === "reset") {
       const targetUser = options.getUser("user", true);
@@ -183,17 +182,6 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.reply({ content: `Successfully reset all stats and matches for <@${targetUser.id}>.` });
     }
 
-    /* ---------------- /voidmatch ---------------- */
-    else if (commandName === "voidmatch") {
-      const matchId = options.getInteger("match_id", true);
-      const res = voidMatch(matchId);
-
-      if (!res) {
-        return interaction.reply({ content: `Match ID **#${matchId}** was not found or is already voided.`, ephemeral: true });
-      }
-
-      await interaction.reply({ content: `Successfully voided Match **#${matchId}**.` });
-    }
   } catch (error) {
     console.error("Error executing command:", error);
 
@@ -205,13 +193,10 @@ client.on("interactionCreate", async (interaction) => {
   }
 });
 
-// 5. Authentication & Login
 const token = process.env.DISCORD_TOKEN;
 
 if (!token) {
-  console.error(
-    "CRITICAL ERROR: process.env.DISCORD_TOKEN is undefined! Check variable name in FadeHost environment settings."
-  );
+  console.error("CRITICAL ERROR: process.env.DISCORD_TOKEN is undefined!");
   process.exit(1);
 }
 
