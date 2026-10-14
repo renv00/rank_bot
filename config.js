@@ -1,0 +1,3 @@
+import 'dotenv/config';
+export const config={token:process.env.DISCORD_TOKEN,clientId:process.env.CLIENT_ID,guildId:process.env.GUILD_ID,roles:{Unranked:process.env.UNRANKED_ROLE_ID,Amateur:process.env.AMATEUR_ROLE_ID,Contender:process.env.CONTENDER_ROLE_ID,Comp:process.env.COMP_ROLE_ID,Elite:process.env.ELITE_ROLE_ID,Supreme:process.env.SUPREME_ROLE_ID},staffRoleId:process.env.STAFF_ROLE_ID||null,logChannelId:process.env.LOG_CHANNEL_ID||null,submissionChannelId:process.env.SUBMISSION_CHANNEL_ID||null};
+export function requireConfig(){for(const k of ['token','clientId','guildId'])if(!config[k])throw Error(`Missing ${k}`)}
