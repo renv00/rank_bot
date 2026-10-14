@@ -11,7 +11,7 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
 } from "discord.js";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
   player,
   ensure,
@@ -36,8 +36,8 @@ import {
   getPendingClaims,
 } from "./db.js";
 
-// Initialize Google GenAI Client (Free Tier via AI Studio)
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// Initialize Google AI Studio Client (100% Free Tier, No Billing Needed)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ---------------- GLOBAL ERROR HANDLERS ----------------
 process.on("unhandledRejection", (reason, promise) => {
@@ -330,7 +330,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-    /* ---------------- /submit HANDLER (Gemini Vision) ---------------- */
+    /* ---------------- /submit HANDLER (Gemini AI Studio Vision) ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -364,29 +364,26 @@ client.on("interactionCreate", async (interaction) => {
 
       let analysis;
       try {
-        // Download image buffer from Discord attachment
         const imgRes = await fetch(attachment.url);
         const imgArrayBuffer = await imgRes.arrayBuffer();
         const base64Image = Buffer.from(imgArrayBuffer).toString("base64");
         const mimeType = attachment.contentType || "image/png";
 
-        const response = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
-          contents: [
-            {
-              inlineData: {
-                data: base64Image,
-                mimeType: mimeType,
-              },
-            },
-            {
-              text: `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard and whether the Roblox username '${reg.roblox_username}' appears on it. Also determine if the match resulted in a victory for this player. Respond strictly in JSON format: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`,
-            },
-          ],
-        });
+        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
-        let rawText = response.text().trim();
-        // Clean markdown code blocks if returned
+        const prompt = `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard and whether the Roblox username '${reg.roblox_username}' appears on it. Also determine if the match resulted in a victory for this player. Respond strictly in valid JSON format with no markdown blocks: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`;
+
+        const result = await model.generateContent([
+          prompt,
+          {
+            inlineData: {
+              data: base64Image,
+              mimeType: mimeType,
+            },
+          },
+        ]);
+
+        let rawText = result.response.text().trim();
         if (rawText.startsWith("```json")) {
           rawText = rawText.replace(/^```json/, "").replace(/```$/, "").trim();
         } else if (rawText.startsWith("```")) {
