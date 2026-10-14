@@ -36,23 +36,37 @@ import {
   getPendingClaims,
 } from "./db.js";
 
-// Helper to sanitize and format private keys from environment variables
-function getFormattedPrivateKey(key) {
-  if (!key) return undefined;
+// Helper to join split base64 environment variables and decode
+function getFormattedPrivateKey() {
+  // Combine split base64 variables (or fallback to single variable)
+  const part1 = process.env.GOOGLE_PRIVATE_KEY_1 || process.env.GOOGLE_PRIVATE_KEY || "";
+  const part2 = process.env.GOOGLE_PRIVATE_KEY_2 || "";
   
-  let formatted = key.replace(/\\n/g, "\n").trim();
-  
-  if (formatted.startsWith('"') && formatted.endsWith('"')) {
-    formatted = formatted.slice(1, -1);
+  let combined = (part1 + part2).trim();
+  if (!combined) return undefined;
+
+  // Strip wrapping quotes if added by panel input
+  if (combined.startsWith('"') && combined.endsWith('"')) {
+    combined = combined.slice(1, -1);
   }
-  
-  return formatted;
+
+  // Decode Base64 string back into RSA PEM format
+  if (!combined.includes("-----BEGIN PRIVATE KEY-----")) {
+    try {
+      combined = Buffer.from(combined, "base64").toString("utf8");
+    } catch (e) {
+      console.error("Failed to decode base64 GOOGLE_PRIVATE_KEY:", e);
+    }
+  }
+
+  // Normalize newline formatting for OpenSSL
+  return combined.replace(/\\n/g, "\n").trim();
 }
 
 const visionClient = new ImageAnnotatorClient({
   credentials: {
     client_email: process.env.GOOGLE_CLIENT_EMAIL?.trim(),
-    private_key: getFormattedPrivateKey(process.env.GOOGLE_PRIVATE_KEY),
+    private_key: getFormattedPrivateKey(),
   },
   projectId: process.env.GOOGLE_PROJECT_ID?.trim(),
 });
