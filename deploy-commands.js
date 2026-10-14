@@ -12,6 +12,33 @@ requireConfig();
 const ranks = ["Unranked", "Amateur", "Contender", "Comp", "Elite", "Supreme"];
 
 const cmds = [
+new SlashCommandBuilder()
+  .setName("register")
+  .setDescription("Register your Roblox username")
+  .addStringOption((o) =>
+    o
+      .setName("username")
+      .setDescription("Your exact Roblox Username")
+      .setRequired(true)
+  ),
+
+new SlashCommandBuilder()
+  .setName("claim")
+  .setDescription("Claim RXP if your team lost the recent match")
+  .addStringOption((o) =>
+    o
+      .setName("username")
+      .setDescription("Your registered Roblox Username")
+      .setRequired(true)
+  ),
+
+new SlashCommandBuilder()
+  .setName("reset-registry")
+  .setDescription("Staff: allow a user to re-register their Roblox account")
+  .addUserOption((o) =>
+    o.setName("user").setDescription("Target Discord User").setRequired(true)
+  )
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
     .setName("startgame")
     .setDescription("Start a ranked game")
