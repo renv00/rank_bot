@@ -363,92 +363,130 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-    /* ---------------- /submit ---------------- */
-    else if (commandName === "submit") {
-      await interaction.deferReply();
+/* ---------------- /submit HANDLER ---------------- */
+else if (commandName === "submit") {
+  await interaction.deferReply();
 
-      const reg = getRegistry(user.id);
-      if (!reg) {
-        return interaction.editReply(
-          "❌ You must run `/register <roblox_username>` before submitting match results!"
-        );
+  const reg = getRegistry(user.id);
+  if (!reg) {
+    return interaction.editReply(
+      "❌ You must run `/register <roblox_username>` before submitting match results!"
+    );
+  }
+
+  const registeredUsername = reg.roblox_username.toLowerCase();
+
+  const activeGames = activeGamesForPlayer(user.id);
+  let hostGame = activeGames.find((g) => g.started_by === user.id);
+
+  if (!hostGame) {
+    for (const [id, lobby] of activeLobbies.entries()) {
+      if (lobby.host === user.id) {
+        hostGame = { id: id, started_by: user.id };
+        break;
       }
-
-      const registeredUsername = reg.roblox_username.toLowerCase();
-
-      const activeGames = activeGamesForPlayer(user.id);
-      let hostGame = activeGames.find((g) => g.started_by === user.id);
-
-      if (!hostGame) {
-        for (const [id, lobby] of activeLobbies.entries()) {
-          if (lobby.host === user.id) {
-            hostGame = { id: id, started_by: user.id };
-            break;
-          }
-        }
-      }
-
-      if (!hostGame) {
-        return interaction.editReply(
-          "❌ You aren't the host of a recent game you played, only the host can submit."
-        );
-      }
-
-      const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
-      const attachment = options.getAttachment("screenshot", true);
-
-      let scannedText = "";
-      try {
-        const [result] = await visionClient.textDetection(attachment.url);
-        const detections = result.textAnnotations;
-        scannedText = detections.length > 0 ? detections[0].description.toLowerCase() : "";
-      } catch (err) {
-        console.error("Google Cloud Vision API Error:", err);
-        return interaction.editReply("❌ Failed to process screenshot with Google Vision API.");
-      }
-
-      if (!scannedText.includes("duel history") && !scannedText.includes("duel") && !scannedText.includes("history")) {
-        return interaction.editReply(
-          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header[cite: 5]. Please upload a clear screenshot."
-        );
-      }
-
-      const cleanScanned = scannedText.replace(/[^a-z0-9]/g, "");
-      const cleanUsername = registeredUsername.replace(/[^a-z0-9]/g, "");
-
-      if (!cleanScanned.includes(cleanUsername)) {
-        return interaction.editReply(
-          `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this Duel History screenshot.`
-        );
-      }
-
-      const hostWon = scannedText.includes("victory");
-      completeGame(game.id, user.id, attachment.url);
-
-      // Handles both user_id (DB column) and userId (memory object)
-      const hostTeam = game.players.find((p) => (p.user_id || p.userId) === user.id)?.team || 1;
-      const winners = game.players.filter((p) => p.team === (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
-      const losers = game.players.filter((p) => p.team !== (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
-
-      for (const w of winners) {
-        const targetId = w.user_id || w.userId;
-        const p = ensure(targetId);
-        patch(targetId, { rxp: p.rxp + 50, wins: p.wins + 1 });
-      }
-
-      if (!hostWon) {
-        setPendingClaim(game.id, losers);
-        const loserPings = losers.map((l) => `<@${l.user_id || l.userId}>`).join(", ");
-
-        return interaction.editReply(
-          ` Match result recorded!\n🏆 **Winning Team awarded automatically.**\n📢 ${loserPings}: Your team lost this game. Run \`/claim "roblox_username"\` to claim your RXP!`
-        );
-      }
-
-      return interaction.editReply(
-        ` Match result recorded!\n🏆 **VICTORY verified for host @${reg.roblox_username}!** RXP automatically distributed to winning team members.`
-      );
     }
+  }
+
+  if (!hostGame) {
+    return interaction.editReply(
+      "❌ You aren't the host of a recent game you played, only the host can submit."
+    );
+  }
+
+  const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
+  const attachment = options.getAttachment("screenshot", true);
+
+  // Perform Google Cloud Vision OCR via REST API Key
+  let scannedText = "";
+  try {
+    const apiKey = process.env.GOOGLE_API_KEY?.trim();
+    if (!apiKey) {
+      throw new Error("GOOGLE_API_KEY environment variable is missing!");
+    }
+
+    const response = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requests: [
+            {
+              image: { source: { imageUri: attachment.url } },
+              features: [{ type: "TEXT_DETECTION" }],
+            },
+          ],
+        }),
+      }
+    );
+
+    const data = await response.json();
+    if (data.error) {
+      throw new Error(data.error.message);
+    }
+
+    scannedText =
+      data.responses[0]?.textAnnotations[0]?.description.toLowerCase() || "";
+  } catch (err) {
+    console.error("Google Cloud Vision API Error:", err);
+    return interaction.editReply(
+      `❌ Failed to process screenshot: ${err.message}`
+    );
+  }
+
+  if (
+    !scannedText.includes("duel history") &&
+    !scannedText.includes("duel") &&
+    !scannedText.includes("history")
+  ) {
+    return interaction.editReply(
+      "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header[cite: 5]. Please upload a clear screenshot."
+    );
+  }
+
+  const cleanScanned = scannedText.replace(/[^a-z0-9]/g, "");
+  const cleanUsername = registeredUsername.replace(/[^a-z0-9]/g, "");
+
+  if (!cleanScanned.includes(cleanUsername)) {
+    return interaction.editReply(
+      `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this Duel History screenshot.`
+    );
+  }
+
+  const hostWon = scannedText.includes("victory");
+  completeGame(game.id, user.id, attachment.url);
+
+  const hostTeam =
+    game.players.find((p) => (p.user_id || p.userId) === user.id)?.team || 1;
+  const winners = game.players.filter(
+    (p) => p.team === (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1)
+  );
+  const losers = game.players.filter(
+    (p) => p.team !== (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1)
+  );
+
+  for (const w of winners) {
+    const targetId = w.user_id || w.userId;
+    const p = ensure(targetId);
+    patch(targetId, { rxp: p.rxp + 50, wins: p.wins + 1 });
+  }
+
+  if (!hostWon) {
+    setPendingClaim(game.id, losers);
+    const loserPings = losers
+      .map((l) => `<@${l.user_id || l.userId}>`)
+      .join(", ");
+
+    return interaction.editReply(
+      ` Match result recorded!\n🏆 **Winning Team awarded automatically.**\n📢 ${loserPings}: Your team lost this game. Run \`/claim "roblox_username"\` to claim your RXP!`
+    );
+  }
+
+  return interaction.editReply(
+    ` Match result recorded!\n🏆 **VICTORY verified for host @${reg.roblox_username}!** RXP automatically distributed to winning team members.`
+  );
+}
 
     /* ---------------- /claim ---------------- */
     else if (commandName === "claim") {
