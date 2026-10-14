@@ -288,10 +288,11 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-    /* ---------------- /submit ---------------- */
+/* ---------------- /submit ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
+      // 1. Fetch Registered User Info
       const reg = getRegistry(user.id);
       if (!reg) {
         return interaction.editReply(
@@ -299,6 +300,9 @@ client.on("interactionCreate", async (interaction) => {
         );
       }
 
+      const registeredUsername = reg.roblox_username.toLowerCase();
+
+      // 2. Fetch Host Active Game
       const activeGames = activeGamesForPlayer(user.id);
       if (!activeGames.length) {
         return interaction.editReply("❌ You do not have an active game lobby to submit results for.");
@@ -307,19 +311,31 @@ client.on("interactionCreate", async (interaction) => {
       const game = getGame(activeGames[0].id);
       const attachment = options.getAttachment("screenshot", true);
 
-      // OCR verification via Tesseract
+      // 3. Process Screenshot via Tesseract OCR
       const worker = await createWorker("eng");
       const ret = await worker.recognize(attachment.url);
       await worker.terminate();
 
       const scannedText = ret.data.text.toLowerCase();
 
+      // 4. Verify 'Duel History' Header
       if (!scannedText.includes("duel history")) {
         return interaction.editReply(
-          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header at the top[cite: 5]. Please take a clearer screenshot of your recent duel match."
+          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header at the top. Please upload a clear screenshot of your recent duel history."
         );
       }
 
+      // 5. Extract Username (@username) Check
+      // Matches @username format used in Roblox UI to avoid matching display names
+      const usernameWithAt = `@${registeredUsername}`;
+      
+      if (!scannedText.includes(usernameWithAt) && !scannedText.includes(registeredUsername)) {
+        return interaction.editReply(
+          `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this Duel History screenshot. Make sure your account username is clearly visible.`
+        );
+      }
+
+      // 6. Record Match Result & Distribute RXP
       const hostWon = scannedText.includes("victory");
       completeGame(game.id, user.id, attachment.url);
 
@@ -342,7 +358,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       return interaction.editReply(
-        ` Match result recorded!\n🏆 **VICTORY verified!** RXP automatically distributed to winning team members.`
+        ` Match result recorded!\n🏆 **VICTORY verified for @${reg.roblox_username}!** RXP automatically distributed to winning team members.`
       );
     }
 
