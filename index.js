@@ -12,6 +12,7 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import { createWorker } from "tesseract.js";
+import sharp from "sharp";
 import {
   player,
   ensure,
@@ -373,12 +374,46 @@ else if (commandName === "startgame") {
       const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
-      // 3. Perform OCR Verification via Tesseract
+// Fetch image buffer for preprocessing
+      const imageResponse = await fetch(attachment.url);
+      const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+
+      // Preprocess screenshot: convert to grayscale and increase contrast for Tesseract
+      const processedBuffer = await sharp(imageBuffer)
+        .grayscale()
+        .linear(1.5, -0.2) // Enhance contrast to pop small text like @Jobbyhobby30
+        .toBuffer();
+
+      // Run Tesseract OCR on the enhanced image
       const worker = await createWorker("eng");
-      const ret = await worker.recognize(attachment.url);
+      const ret = await worker.recognize(processedBuffer);
       await worker.terminate();
 
-      const scannedText = ret.data.text.toLowerCase();
+      // Clean and normalize text (handles OCR misreadings like 'o' vs '0' or 'l' vs '1')
+      const rawText = ret.data.text.toLowerCase();
+      const normalizedText = rawText
+        .replace(/0/g, "o")
+        .replace(/1/g, "l")
+        .replace(/[^a-z0-9]/g, "");
+
+      const normalizedUsername = registeredUsername
+        .replace(/0/g, "o")
+        .replace(/1/g, "l")
+        .replace(/[^a-z0-9]/g, "");
+
+      // Verify 'Duel History' title
+      if (!rawText.includes("duel history") && !normalizedText.includes("duelhistory")) {
+        return interaction.editReply(
+          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header at the top. Please upload a clearer screenshot."
+        );
+      }
+
+      // Verify Roblox username matching
+      if (!normalizedText.includes(normalizedUsername)) {
+        return interaction.editReply(
+          `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected. Please upload a higher resolution or less compressed screenshot.`
+        );
+      }
 
       // 4. Verify 'Duel History' Header in Screenshot
       if (!scannedText.includes("duel history")) {
