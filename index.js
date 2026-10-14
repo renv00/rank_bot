@@ -12,29 +12,6 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import { ImageAnnotatorClient } from "@google-cloud/vision";
-
-// Helper to sanitize and format private keys from environment variables
-function getFormattedPrivateKey(key) {
-  if (!key) return undefined;
-  
-  // Un-escape any backslashes and normalize newline characters
-  let formatted = key.replace(/\\n/g, "\n").trim();
-  
-  // Strip quotes if added by environment variable inputs
-  if (formatted.startsWith('"') && formatted.endsWith('"')) {
-    formatted = formatted.slice(1, -1);
-  }
-  
-  return formatted;
-}
-
-const visionClient = new ImageAnnotatorClient({
-  credentials: {
-    client_email: process.env.GOOGLE_CLIENT_EMAIL?.trim(),
-    private_key: getFormattedPrivateKey(process.env.GOOGLE_PRIVATE_KEY),
-  },
-  projectId: process.env.GOOGLE_PROJECT_ID?.trim(),
-});
 import {
   player,
   ensure,
@@ -59,6 +36,27 @@ import {
   getPendingClaims,
 } from "./db.js";
 
+// Helper to sanitize and format private keys from environment variables
+function getFormattedPrivateKey(key) {
+  if (!key) return undefined;
+  
+  let formatted = key.replace(/\\n/g, "\n").trim();
+  
+  if (formatted.startsWith('"') && formatted.endsWith('"')) {
+    formatted = formatted.slice(1, -1);
+  }
+  
+  return formatted;
+}
+
+const visionClient = new ImageAnnotatorClient({
+  credentials: {
+    client_email: process.env.GOOGLE_CLIENT_EMAIL?.trim(),
+    private_key: getFormattedPrivateKey(process.env.GOOGLE_PRIVATE_KEY),
+  },
+  projectId: process.env.GOOGLE_PROJECT_ID?.trim(),
+});
+
 // ---------------- GLOBAL ERROR HANDLERS ----------------
 process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
@@ -81,7 +79,6 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
-// Active game lobbies held in memory for /startgame join buttons
 const activeLobbies = new Map();
 
 // ---------------- AUTOMATIC COMMAND REGISTRATION ----------------
@@ -89,14 +86,14 @@ const ranks = ["Unranked", "Amateur", "Contender", "Comp", "Elite", "Supreme"];
 
 const commandDefinitions = [
   new SlashCommandBuilder()
-  .setName("startgame")
-  .setDescription("Start a ranked game")
-  .addStringOption((o) =>
-    o.setName("team1").setDescription("Tag Team 1 members (e.g. @user1, @user2)").setRequired(true)
-  )
-  .addStringOption((o) =>
-    o.setName("team2").setDescription("Tag Team 2 members (e.g. @user3, @user4)").setRequired(true)
-  ),
+    .setName("startgame")
+    .setDescription("Start a ranked game")
+    .addStringOption((o) =>
+      o.setName("team1").setDescription("Tag Team 1 members (e.g. @user1, @user2)").setRequired(true)
+    )
+    .addStringOption((o) =>
+      o.setName("team2").setDescription("Tag Team 2 members (e.g. @user3, @user4)").setRequired(true)
+    ),
 
   new SlashCommandBuilder()
     .setName("register")
@@ -188,14 +185,12 @@ client.once("ready", async () => {
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
-    // 1. Wipe duplicate guild-level commands from all joined servers
     const guilds = await client.guilds.fetch();
     for (const [guildId] of guilds) {
       await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body: [] });
     }
     console.log("🧹 Cleared old guild-specific command duplicates.");
 
-    // 2. Set clean global commands
     console.log("Syncing global slash commands with Discord...");
     await rest.put(Routes.applicationCommands(client.user.id), {
       body: commandDefinitions.map((cmd) => cmd.toJSON()),
@@ -208,7 +203,6 @@ client.once("ready", async () => {
 
 // ---------------- INTERACTION HANDLER ----------------
 client.on("interactionCreate", async (interaction) => {
-  // 1. HANDLE BUTTON INTERACTION (JOIN GAME)
   if (interaction.isButton()) {
     if (interaction.customId.startsWith("join_game_")) {
       const gameId = interaction.customId.replace("join_game_", "");
@@ -249,7 +243,6 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  // 2. HANDLE SLASH COMMANDS
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName, options, user } = interaction;
@@ -286,81 +279,80 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-/* ---------------- /startgame ---------------- */
-else if (commandName === "startgame") {
-  await interaction.deferReply();
+    /* ---------------- /startgame ---------------- */
+    else if (commandName === "startgame") {
+      await interaction.deferReply();
 
-  const rawT1 = options.getString("team1", true);
-  const rawT2 = options.getString("team2", true);
+      const rawT1 = options.getString("team1", true);
+      const rawT2 = options.getString("team2", true);
 
-  // Extract Discord User IDs from mentions like <@123456789>
-  const extractUserIds = (text) => [...text.matchAll(/<@!?(\d+)>/g)].map((m) => m[1]);
+      // Extracts user IDs from mentions (<@12345>) or raw numeric IDs
+      const extractUserIds = (text) => {
+        const matches = [...text.matchAll(/(?:<@!?(\d+)>|(\d{17,20}))/g)];
+        return matches.map((m) => m[1] || m[2]).filter(Boolean);
+      };
 
-  const t1Ids = extractUserIds(rawT1);
-  const t2Ids = extractUserIds(rawT2);
+      const t1Ids = extractUserIds(rawT1);
+      const t2Ids = extractUserIds(rawT2);
 
-  if (!t1Ids.length || !t2Ids.length) {
-    return interaction.editReply("❌ Please tag at least one valid Discord user (@mention) for each team!");
-  }
+      if (!t1Ids.length || !t2Ids.length) {
+        return interaction.editReply("❌ Please tag at least one valid Discord user (@mention) for each team!");
+      }
 
-  const allIds = [...new Set([...t1Ids, ...t2Ids])];
-  const unregistered = [];
-  const gamePlayers = [];
+      const allIds = [...new Set([...t1Ids, ...t2Ids])];
+      const unregistered = [];
+      const gamePlayers = [];
 
-  for (const id of allIds) {
-    const reg = getRegistry(id);
-    if (!reg) {
-      unregistered.push(`<@${id}>`);
-    } else {
-      const teamNum = t1Ids.includes(id) ? 1 : 2;
-      gamePlayers.push({
-        userId: id,
-        username: reg.roblox_username,
-        team: teamNum,
+      for (const id of allIds) {
+        const reg = getRegistry(id);
+        if (!reg) {
+          unregistered.push(`<@${id}>`);
+        } else {
+          const teamNum = t1Ids.includes(id) ? 1 : 2;
+          gamePlayers.push({
+            userId: id,
+            username: reg.roblox_username,
+            team: teamNum,
+          });
+        }
+      }
+
+      if (unregistered.length > 0) {
+        return interaction.editReply(
+          `❌ Cannot start game! The following player(s) must run \`/register\` first: ${unregistered.join(", ")}`
+        );
+      }
+
+      const game = createGame(user.id, gamePlayers);
+      const gameId = game.id.toString();
+
+      activeLobbies.set(gameId, {
+        host: user.id,
+        maxPlayers: allIds.length,
+        players: [{ id: user.id, username: user.username }],
       });
+
+      const t1Pings = t1Ids.map((id) => `<@${id}>`).join(", ");
+      const t2Pings = t2Ids.map((id) => `<@${id}>`).join(", ");
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Pending game #${gameId}`)
+        .setColor(0x2b2d31)
+        .setDescription(
+          `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n**Players Joined (1/${allIds.length}):**\n1. <@${user.id}>`
+        );
+
+      const joinButton = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`join_game_${gameId}`).setLabel("Join").setStyle(ButtonStyle.Success)
+      );
+
+      await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
-  }
 
-  if (unregistered.length > 0) {
-    return interaction.editReply(
-      `❌ Cannot start game! The following player(s) must run \`/register\` first: ${unregistered.join(", ")}`
-    );
-  }
-
-  const game = createGame(user.id, gamePlayers);
-  const gameId = game.id.toString();
-
-  activeLobbies.set(gameId, {
-    host: user.id,
-    maxPlayers: allIds.length,
-    players: [{ id: user.id, username: user.username }],
-  });
-
-  const t1Pings = t1Ids.map((id) => `<@${id}>`).join(", ");
-  const t2Pings = t2Ids.map((id) => `<@${id}>`).join(", ");
-
-  const embed = new EmbedBuilder()
-    .setTitle(`Pending game #${gameId}`)
-    .setColor(0x2b2d31)
-    .setDescription(
-      `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n**Players Joined (1/${allIds.length}):**\n1. <@${user.id}>`
-    );
-
-  const joinButton = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`join_game_${gameId}`)
-      .setLabel("Join")
-      .setStyle(ButtonStyle.Success)
-  );
-
-  await interaction.editReply({ embeds: [embed], components: [joinButton] });
-}
-
-/* ---------------- /submit ---------------- */
+    /* ---------------- /submit ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
-      // 1. Verify User Registration
       const reg = getRegistry(user.id);
       if (!reg) {
         return interaction.editReply(
@@ -370,7 +362,6 @@ else if (commandName === "startgame") {
 
       const registeredUsername = reg.roblox_username.toLowerCase();
 
-      // 2. Fetch Active Host Game
       const activeGames = activeGamesForPlayer(user.id);
       let hostGame = activeGames.find((g) => g.started_by === user.id);
 
@@ -392,7 +383,6 @@ else if (commandName === "startgame") {
       const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
-      // 3. Scan Image via Google Cloud Vision API
       let scannedText = "";
       try {
         const [result] = await visionClient.textDetection(attachment.url);
@@ -403,14 +393,12 @@ else if (commandName === "startgame") {
         return interaction.editReply("❌ Failed to process screenshot with Google Vision API.");
       }
 
-      // 4. Verify 'Duel History' Header
       if (!scannedText.includes("duel history") && !scannedText.includes("duel") && !scannedText.includes("history")) {
         return interaction.editReply(
           "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header[cite: 5]. Please upload a clear screenshot."
         );
       }
 
-      // 5. Verify Registered Roblox @username
       const cleanScanned = scannedText.replace(/[^a-z0-9]/g, "");
       const cleanUsername = registeredUsername.replace(/[^a-z0-9]/g, "");
 
@@ -420,22 +408,23 @@ else if (commandName === "startgame") {
         );
       }
 
-      // 6. Record Match Result & Distribute RXP
       const hostWon = scannedText.includes("victory");
       completeGame(game.id, user.id, attachment.url);
 
-      const hostTeam = game.players.filter((p) => p.user_id === user.id)[0]?.team || 1;
+      // Handles both user_id (DB column) and userId (memory object)
+      const hostTeam = game.players.find((p) => (p.user_id || p.userId) === user.id)?.team || 1;
       const winners = game.players.filter((p) => p.team === (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
       const losers = game.players.filter((p) => p.team !== (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
 
       for (const w of winners) {
-        const p = ensure(w.user_id);
-        patch(w.user_id, { rxp: p.rxp + 50, wins: p.wins + 1 });
+        const targetId = w.user_id || w.userId;
+        const p = ensure(targetId);
+        patch(targetId, { rxp: p.rxp + 50, wins: p.wins + 1 });
       }
 
       if (!hostWon) {
         setPendingClaim(game.id, losers);
-        const loserPings = losers.map((l) => `<@${l.user_id}>`).join(", ");
+        const loserPings = losers.map((l) => `<@${l.user_id || l.userId}>`).join(", ");
 
         return interaction.editReply(
           ` Match result recorded!\n🏆 **Winning Team awarded automatically.**\n📢 ${loserPings}: Your team lost this game. Run \`/claim "roblox_username"\` to claim your RXP!`
