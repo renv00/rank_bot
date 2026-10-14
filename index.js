@@ -11,8 +11,18 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
 } from "discord.js";
-import { createWorker } from "tesseract.js";
-import sharp from "sharp";
+import { ImageAnnotatorClient } from "@google-cloud/vision";
+
+// Reconstruct credentials from FadeHost split variables
+const visionClient = new ImageAnnotatorClient({
+  credentials: {
+    client_email: process.env.GOOGLE_CLIENT_EMAIL,
+    private_key: process.env.GOOGLE_PRIVATE_KEY
+      ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n")
+      : undefined,
+  },
+  projectId: process.env.GOOGLE_PROJECT_ID,
+});
 import {
   player,
   ensure,
@@ -334,7 +344,7 @@ else if (commandName === "startgame") {
   await interaction.editReply({ embeds: [embed], components: [joinButton] });
 }
 
-    /* ---------------- /submit ---------------- */
+/* ---------------- /submit ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -348,13 +358,10 @@ else if (commandName === "startgame") {
 
       const registeredUsername = reg.roblox_username.toLowerCase();
 
-      // 2. Fetch Active Games Where User Is Host
+      // 2. Fetch Active Host Game
       const activeGames = activeGamesForPlayer(user.id);
-
-      // Check if user is the host of an active database game
       let hostGame = activeGames.find((g) => g.started_by === user.id);
 
-      // Fallback check inside in-memory active lobbies
       if (!hostGame) {
         for (const [id, lobby] of activeLobbies.entries()) {
           if (lobby.host === user.id) {
@@ -364,7 +371,6 @@ else if (commandName === "startgame") {
         }
       }
 
-      // Block execution if the user is NOT the host
       if (!hostGame) {
         return interaction.editReply(
           "❌ You aren't the host of a recent game you played, only the host can submit."
@@ -374,90 +380,35 @@ else if (commandName === "startgame") {
       const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
-// 1. Fetch Image Buffer
-      const imageResponse = await fetch(attachment.url);
-      const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-
-      // 2. Preprocess & Upscale with Sharp
-      // Upscaling 3x and applying aggressive thresholding isolates dark text on light UI rows
-      const metadata = await sharp(imageBuffer).metadata();
-      const processedBuffer = await sharp(imageBuffer)
-        .resize({ width: Math.round(metadata.width * 3) }) // 3x Upscale for small UI text
-        .grayscale()
-        .normalize() // Stretch contrast to maximum range
-        .sharpen()
-        .toBuffer();
-
-      // 3. Run Tesseract OCR with PSM 6 (Assume a single uniform block of text)
-      const worker = await createWorker("eng");
-      await worker.setParameters({
-        tessedit_pageseg_mode: "6", // Better mode for UI scoreboards and tables
-      });
-
-      const ret = await worker.recognize(processedBuffer);
-      await worker.terminate();
-
-      const scannedText = ret.data.text.toLowerCase();
+      // 3. Scan Image via Google Cloud Vision API
+      let scannedText = "";
+      try {
+        const [result] = await visionClient.textDetection(attachment.url);
+        const detections = result.textAnnotations;
+        scannedText = detections.length > 0 ? detections[0].description.toLowerCase() : "";
+      } catch (err) {
+        console.error("Google Cloud Vision API Error:", err);
+        return interaction.editReply("❌ Failed to process screenshot with Google Vision API.");
+      }
 
       // 4. Verify 'Duel History' Header
       if (!scannedText.includes("duel history") && !scannedText.includes("duel") && !scannedText.includes("history")) {
         return interaction.editReply(
-          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header. Please upload a clear screenshot of your duel history."
+          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header[cite: 5]. Please upload a clear screenshot."
         );
       }
 
-      // 5. Fuzzy Match / Clean Username Extraction
-      // Strip special characters and normalize visually similar characters
-      const cleanScanned = scannedText
-        .replace(/0/g, "o")
-        .replace(/1/g, "l")
-        .replace(/i/g, "l")
-        .replace(/[^a-z0-9]/g, "");
+      // 5. Verify Registered Roblox @username
+      const cleanScanned = scannedText.replace(/[^a-z0-9]/g, "");
+      const cleanUsername = registeredUsername.replace(/[^a-z0-9]/g, "");
 
-      const cleanUsername = registeredUsername
-        .replace(/0/g, "o")
-        .replace(/1/g, "l")
-        .replace(/i/g, "l")
-        .replace(/[^a-z0-9]/g, "");
-
-      // Allow partial chunk matching in case OCR misses a character at the end/start
-      const usernameChunk = cleanUsername.slice(0, Math.min(6, cleanUsername.length));
-
-      if (!cleanScanned.includes(cleanUsername) && !cleanScanned.includes(usernameChunk)) {
-        return interaction.editReply(
-          `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this Duel History screenshot.`
-        );
-      }
-      // Verify 'Duel History' title
-      if (!rawText.includes("duel history") && !normalizedText.includes("duelhistory")) {
-        return interaction.editReply(
-          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header at the top. Please upload a clearer screenshot."
-        );
-      }
-
-      // Verify Roblox username matching
-      if (!normalizedText.includes(normalizedUsername)) {
-        return interaction.editReply(
-          `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected. Please upload a higher resolution or less compressed screenshot.`
-        );
-      }
-
-      // 4. Verify 'Duel History' Header in Screenshot
-      if (!scannedText.includes("duel history")) {
-        return interaction.editReply(
-          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header at the top. Please upload a clear screenshot of your recent duel history."
-        );
-      }
-
-      // 5. Verify Host's Registered Roblox @username
-      const usernameWithAt = `@${registeredUsername}`;
-      if (!scannedText.includes(usernameWithAt) && !scannedText.includes(registeredUsername)) {
+      if (!cleanScanned.includes(cleanUsername)) {
         return interaction.editReply(
           `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this Duel History screenshot.`
         );
       }
 
-      // 6. Record Result & Handle RXP Rewards
+      // 6. Record Match Result & Distribute RXP
       const hostWon = scannedText.includes("victory");
       completeGame(game.id, user.id, attachment.url);
 
@@ -475,7 +426,7 @@ else if (commandName === "startgame") {
         const loserPings = losers.map((l) => `<@${l.user_id}>`).join(", ");
 
         return interaction.editReply(
-          ` Match result recorded!\n🏆 **Winning Team awarded automatically.**\n📢 ${loserPings}: Your team lost this game. Run \`/claim "roblox_username"\` to claim your consolation RXP!`
+          ` Match result recorded!\n🏆 **Winning Team awarded automatically.**\n📢 ${loserPings}: Your team lost this game. Run \`/claim "roblox_username"\` to claim your RXP!`
         );
       }
 
