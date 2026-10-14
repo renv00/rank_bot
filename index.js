@@ -26,6 +26,31 @@ import {
   completeGame,
 } from "./db.js";
 
+import { REST, Routes } from "discord.js";
+import { config } from "./config.js"; // Ensure path matches your config file location
+
+// Auto-register slash commands on startup
+async function registerCommands() {
+  try {
+    console.log("Syncing slash commands with Discord...");
+    
+    // Import your command definitions from deploy-commands or define them directly
+    const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN || config.token);
+
+    // Runs command deployment directly
+    await rest.put(
+      Routes.applicationGuildCommands(config.clientId, config.guildId),
+      { body: cmds.map((x) => x.toJSON()) }
+    );
+
+    console.log("✅ Slash commands registered successfully!");
+  } catch (error) {
+    console.error("Failed to register slash commands:", error);
+  }
+}
+
+// Call registration on startup
+registerCommands();
 // Global error handlers
 process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
