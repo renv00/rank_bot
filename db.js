@@ -1,8 +1,18 @@
 import Database from "better-sqlite3";
+import path from "node:path";
+import process from "node:process";
 
-const db = new Database("ranked.sqlite");
+// Resolve an absolute path to avoid permission / working directory errors
+const dbPath = path.resolve(process.cwd(), "ranked.sqlite");
 
-db.pragma("journal_mode=WAL");
+let db;
+try {
+  db = new Database(dbPath);
+  db.pragma("journal_mode=WAL");
+} catch (err) {
+  console.error("Failed to initialize SQLite database at:", dbPath, err);
+  throw err;
+}
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS players (
@@ -68,7 +78,6 @@ CREATE TABLE IF NOT EXISTS game_players (
 
 export function ensure(id) {
   db.prepare("INSERT OR IGNORE INTO players(user_id) VALUES(?)").run(id);
-
   return db.prepare("SELECT * FROM players WHERE user_id=?").get(id);
 }
 
@@ -276,11 +285,6 @@ export function completeGame(id, submittedBy, screenshotHash) {
 }
 
 /* ---------------- DUPLICATE SCREENSHOTS ---------------- */
-
-/*
-  A screenshot belongs to a game, not to an individual player.
-  This means one screenshot can award every player in that game.
-*/
 
 export function dup(hash) {
   return !!db
