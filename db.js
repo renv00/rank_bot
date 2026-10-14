@@ -72,6 +72,17 @@ CREATE TABLE IF NOT EXISTS game_players (
   team INTEGER NOT NULL,
   PRIMARY KEY (game_id, user_id)
 );
+
+CREATE TABLE IF NOT EXISTS registry (
+  discord_id TEXT PRIMARY KEY,
+  roblox_username TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS pending_claims (
+  game_id INTEGER PRIMARY KEY,
+  losing_team_json TEXT NOT NULL,
+  claimed_users_json TEXT NOT NULL DEFAULT '[]'
+);
 `);
 
 /* ---------------- PLAYERS ---------------- */
@@ -431,4 +442,30 @@ export function voidMatch(id) {
   });
 
   return m;
+}
+
+/* ---------------- REGISTRY HELPERS ---------------- */
+
+export function getRegistry(discordId) {
+  return db.prepare("SELECT * FROM registry WHERE discord_id=?").get(discordId);
+}
+
+export function setRegistry(discordId, robloxUsername) {
+  return db
+    .prepare("INSERT INTO registry (discord_id, roblox_username) VALUES (?, ?)")
+    .run(discordId, robloxUsername);
+}
+
+export function resetRegistry(discordId) {
+  return db.prepare("DELETE FROM registry WHERE discord_id=?").run(discordId);
+}
+
+export function setPendingClaim(gameId, losingTeam) {
+  return db
+    .prepare("INSERT OR REPLACE INTO pending_claims (game_id, losing_team_json) VALUES (?, ?)")
+    .run(gameId, JSON.stringify(losingTeam));
+}
+
+export function getPendingClaims() {
+  return db.prepare("SELECT * FROM pending_claims").all();
 }
