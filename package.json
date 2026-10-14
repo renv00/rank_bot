@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "prestart": "node src/deploy-commands.js",
+    "prestart": "node deploy-commands.js",
     "start": "node -e \"const fs=require('fs'), cp=require('child_process'); const f=['src/index.js','index.js','src/bot.js','bot.js'].find(p=>fs.existsSync(p)); if(!f){console.error('No entry file found!'); process.exit(1);} cp.spawnSync('node', [f], {stdio:'inherit'});\"",
     "deploy": "node src/deploy-commands.js"
   },
