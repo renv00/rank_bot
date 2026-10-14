@@ -1,13 +1,3 @@
-// Add this at the very top of index.js to force error logging
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception thrown:', err);
-});
-
-console.log("Starting bot...");
 import {
   player,
   ensure,
@@ -27,3 +17,14 @@ import {
   activeGame,
   completeGame,
 } from "./db.js";
+
+// Global error handlers (placed after imports)
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception thrown:', err);
+});
+
+console.log("Starting bot...");
