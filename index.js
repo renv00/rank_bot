@@ -19,6 +19,30 @@ import {
   completeGame,
 } from "./db.js";
 
+client.on("interactionCreate", async (interaction) => {
+  // Only handle slash commands
+  if (!interaction.isChatInputCommand()) return;
+
+  try {
+    // Example test command response
+    if (interaction.commandName === "ping") {
+      await interaction.reply({ content: "Pong!", ephemeral: true });
+    }
+    
+    // Add logic for your other commands here...
+
+  } catch (error) {
+    console.error("Error executing command:", error);
+
+    // Reply or followUp so Discord doesn't display "application did not respond"
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({ content: "There was an error executing this command!", ephemeral: true });
+    } else {
+      await interaction.reply({ content: "There was an error executing this command!", ephemeral: true });
+    }
+  }
+});
+
 // 1. Register global uncaught error listeners
 process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
