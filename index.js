@@ -11,7 +11,7 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
 } from "discord.js";
-import { ImageAnnotatorClient } from "@google-cloud/vision";
+import OpenAI from "openai";
 import {
   player,
   ensure,
@@ -36,40 +36,8 @@ import {
   getPendingClaims,
 } from "./db.js";
 
-// Helper to join split base64 environment variables and decode
-function getFormattedPrivateKey() {
-  // Combine split base64 variables (or fallback to single variable)
-  const part1 = process.env.GOOGLE_PRIVATE_KEY_1 || process.env.GOOGLE_PRIVATE_KEY || "";
-  const part2 = process.env.GOOGLE_PRIVATE_KEY_2 || "";
-  
-  let combined = (part1 + part2).trim();
-  if (!combined) return undefined;
-
-  // Strip wrapping quotes if added by panel input
-  if (combined.startsWith('"') && combined.endsWith('"')) {
-    combined = combined.slice(1, -1);
-  }
-
-  // Decode Base64 string back into RSA PEM format
-  if (!combined.includes("-----BEGIN PRIVATE KEY-----")) {
-    try {
-      combined = Buffer.from(combined, "base64").toString("utf8");
-    } catch (e) {
-      console.error("Failed to decode base64 GOOGLE_PRIVATE_KEY:", e);
-    }
-  }
-
-  // Normalize newline formatting for OpenSSL
-  return combined.replace(/\\n/g, "\n").trim();
-}
-
-const visionClient = new ImageAnnotatorClient({
-  credentials: {
-    client_email: process.env.GOOGLE_CLIENT_EMAIL?.trim(),
-    private_key: getFormattedPrivateKey(),
-  },
-  projectId: process.env.GOOGLE_PROJECT_ID?.trim(),
-});
+// Initialize OpenAI Client for Vision Analysis
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ---------------- GLOBAL ERROR HANDLERS ----------------
 process.on("unhandledRejection", (reason, promise) => {
@@ -300,7 +268,6 @@ client.on("interactionCreate", async (interaction) => {
       const rawT1 = options.getString("team1", true);
       const rawT2 = options.getString("team2", true);
 
-      // Extracts user IDs from mentions (<@12345>) or raw numeric IDs
       const extractUserIds = (text) => {
         const matches = [...text.matchAll(/(?:<@!?(\d+)>|(\d{17,20}))/g)];
         return matches.map((m) => m[1] || m[2]).filter(Boolean);
@@ -363,130 +330,105 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-/* ---------------- /submit HANDLER ---------------- */
-else if (commandName === "submit") {
-  await interaction.deferReply();
+    /* ---------------- /submit HANDLER (OpenAI Vision) ---------------- */
+    else if (commandName === "submit") {
+      await interaction.deferReply();
 
-  const reg = getRegistry(user.id);
-  if (!reg) {
-    return interaction.editReply(
-      "❌ You must run `/register <roblox_username>` before submitting match results!"
-    );
-  }
-
-  const registeredUsername = reg.roblox_username.toLowerCase();
-
-  const activeGames = activeGamesForPlayer(user.id);
-  let hostGame = activeGames.find((g) => g.started_by === user.id);
-
-  if (!hostGame) {
-    for (const [id, lobby] of activeLobbies.entries()) {
-      if (lobby.host === user.id) {
-        hostGame = { id: id, started_by: user.id };
-        break;
+      const reg = getRegistry(user.id);
+      if (!reg) {
+        return interaction.editReply(
+          "❌ You must run `/register <roblox_username>` before submitting match results!"
+        );
       }
-    }
-  }
 
-  if (!hostGame) {
-    return interaction.editReply(
-      "❌ You aren't the host of a recent game you played, only the host can submit."
-    );
-  }
+      const activeGames = activeGamesForPlayer(user.id);
+      let hostGame = activeGames.find((g) => g.started_by === user.id);
 
-  const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
-  const attachment = options.getAttachment("screenshot", true);
+      if (!hostGame) {
+        for (const [id, lobby] of activeLobbies.entries()) {
+          if (lobby.host === user.id) {
+            hostGame = { id: id, started_by: user.id };
+            break;
+          }
+        }
+      }
 
-  // Perform Google Cloud Vision OCR via REST API Key
-  let scannedText = "";
-  try {
-    const apiKey = process.env.GOOGLE_API_KEY?.trim();
-    if (!apiKey) {
-      throw new Error("GOOGLE_API_KEY environment variable is missing!");
-    }
+      if (!hostGame) {
+        return interaction.editReply(
+          "❌ You aren't the host of a recent game you played, only the host can submit."
+        );
+      }
 
-    const response = await fetch(
-      `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requests: [
+      const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
+      const attachment = options.getAttachment("screenshot", true);
+
+      // Verify screenshot using OpenAI GPT-4o-mini Vision
+      let analysis;
+      try {
+        const response = await openai.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
             {
-              image: { source: { imageUri: attachment.url } },
-              features: [{ type: "TEXT_DETECTION" }],
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard and whether the Roblox username '${reg.roblox_username}' appears on it. Also determine if the match resulted in a victory for this player. Respond strictly in JSON format: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`,
+                },
+                {
+                  type: "image_url",
+                  image_url: { url: attachment.url },
+                },
+              ],
             },
           ],
-        }),
+          response_format: { type: "json_object" },
+        });
+
+        analysis = JSON.parse(response.choices[0].message.content);
+      } catch (err) {
+        console.error("OpenAI Vision API Error:", err);
+        return interaction.editReply("❌ Failed to analyze screenshot with AI vision.");
       }
-    );
 
-    const data = await response.json();
-    if (data.error) {
-      throw new Error(data.error.message);
+      if (!analysis.isDuelHistory) {
+        return interaction.editReply(
+          "❌ **Invalid Screenshot:** The uploaded image does not contain the 'Duel History' page. Please upload a clear screenshot."
+        );
+      }
+
+      if (!analysis.usernameFound) {
+        return interaction.editReply(
+          `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this screenshot.`
+        );
+      }
+
+      const hostWon = analysis.hostWon;
+      completeGame(game.id, user.id, attachment.url);
+
+      const hostTeam = game.players.find((p) => (p.user_id || p.userId) === user.id)?.team || 1;
+      const winners = game.players.filter((p) => p.team === (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
+      const losers = game.players.filter((p) => p.team !== (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
+
+      for (const w of winners) {
+        const targetId = w.user_id || w.userId;
+        const p = ensure(targetId);
+        patch(targetId, { rxp: p.rxp + 50, wins: p.wins + 1 });
+      }
+
+      if (!hostWon) {
+        setPendingClaim(game.id, losers);
+        const loserPings = losers.map((l) => `<@${l.user_id || l.userId}>`).join(", ");
+
+        return interaction.editReply(
+          ` Match result recorded!\n🏆 **Winning Team awarded automatically.**\n📢 ${loserPings}: Your team lost this game. Run \`/claim "roblox_username"\` to claim your RXP!`
+        );
+      }
+
+      return interaction.editReply(
+        ` Match result recorded!\n🏆 **VICTORY verified for host @${reg.roblox_username}!** RXP automatically distributed to winning team members.`
+      );
     }
-
-    scannedText =
-      data.responses[0]?.textAnnotations[0]?.description.toLowerCase() || "";
-  } catch (err) {
-    console.error("Google Cloud Vision API Error:", err);
-    return interaction.editReply(
-      `❌ Failed to process screenshot: ${err.message}`
-    );
-  }
-
-  if (
-    !scannedText.includes("duel history") &&
-    !scannedText.includes("duel") &&
-    !scannedText.includes("history")
-  ) {
-    return interaction.editReply(
-      "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header[cite: 5]. Please upload a clear screenshot."
-    );
-  }
-
-  const cleanScanned = scannedText.replace(/[^a-z0-9]/g, "");
-  const cleanUsername = registeredUsername.replace(/[^a-z0-9]/g, "");
-
-  if (!cleanScanned.includes(cleanUsername)) {
-    return interaction.editReply(
-      `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this Duel History screenshot.`
-    );
-  }
-
-  const hostWon = scannedText.includes("victory");
-  completeGame(game.id, user.id, attachment.url);
-
-  const hostTeam =
-    game.players.find((p) => (p.user_id || p.userId) === user.id)?.team || 1;
-  const winners = game.players.filter(
-    (p) => p.team === (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1)
-  );
-  const losers = game.players.filter(
-    (p) => p.team !== (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1)
-  );
-
-  for (const w of winners) {
-    const targetId = w.user_id || w.userId;
-    const p = ensure(targetId);
-    patch(targetId, { rxp: p.rxp + 50, wins: p.wins + 1 });
-  }
-
-  if (!hostWon) {
-    setPendingClaim(game.id, losers);
-    const loserPings = losers
-      .map((l) => `<@${l.user_id || l.userId}>`)
-      .join(", ");
-
-    return interaction.editReply(
-      ` Match result recorded!\n🏆 **Winning Team awarded automatically.**\n📢 ${loserPings}: Your team lost this game. Run \`/claim "roblox_username"\` to claim your RXP!`
-    );
-  }
-
-  return interaction.editReply(
-    ` Match result recorded!\n🏆 **VICTORY verified for host @${reg.roblox_username}!** RXP automatically distributed to winning team members.`
-  );
-}
 
     /* ---------------- /claim ---------------- */
     else if (commandName === "claim") {
