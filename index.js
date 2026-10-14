@@ -369,7 +369,7 @@ client.on("interactionCreate", async (interaction) => {
         const base64Image = Buffer.from(imgArrayBuffer).toString("base64");
         const mimeType = attachment.contentType || "image/png";
 
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
 
         const prompt = `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard and whether the Roblox username '${reg.roblox_username}' appears on it. Also determine if the match resulted in a victory for this player. Respond strictly in valid JSON format with no markdown blocks: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`;
 
