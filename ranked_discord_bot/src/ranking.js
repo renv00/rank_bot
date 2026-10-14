@@ -1,3 +1,0 @@
-export const NEXT={Amateur:200,Contender:250,Comp:300};
-export function placementRank(r){if(r.length!==5)return null;if(r.every(x=>x.scoreFor===5&&x.scoreAgainst===0))return['Contender',7.5];if(r.filter(x=>x.scoreFor===5&&[1,2,3].includes(x.scoreAgainst)).length>=2)return['Contender',7];if(r.filter(x=>x.scoreFor===5&&x.scoreAgainst===4).length>=2)return['Amateur',6.5];if(r.every(x=>x.scoreFor===5&&[3,4].includes(x.scoreAgainst)))return['Amateur',6];return null}
-export function rxp({sf,sa,k,d,a,place}){if(sf<=sa)return 0;const match={0:45,1:40,2:35,3:30,4:25}[sa]??25;const individual=Math.min(k*3,36)+Math.min(a,10)-Math.min(d*2,16);const pos=place===1?8:place===2?5:place===3?3:0;return Math.max(25,Math.min(100,Math.round(match+individual+pos)))}
