@@ -11,7 +11,7 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
 } from "discord.js";
-import OpenAI from "openai";
+import { GoogleGenAI } from "@google/genai";
 import {
   player,
   ensure,
@@ -36,8 +36,8 @@ import {
   getPendingClaims,
 } from "./db.js";
 
-// Initialize OpenAI Client for Vision Analysis
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Initialize Google GenAI Client (Free Tier via AI Studio)
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 // ---------------- GLOBAL ERROR HANDLERS ----------------
 process.on("unhandledRejection", (reason, promise) => {
@@ -330,7 +330,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-    /* ---------------- /submit HANDLER (OpenAI Vision) ---------------- */
+    /* ---------------- /submit HANDLER (Gemini Vision) ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -362,33 +362,41 @@ client.on("interactionCreate", async (interaction) => {
       const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
-      // Verify screenshot using OpenAI GPT-4o-mini Vision
       let analysis;
       try {
-        const response = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [
+        // Download image buffer from Discord attachment
+        const imgRes = await fetch(attachment.url);
+        const imgArrayBuffer = await imgRes.arrayBuffer();
+        const base64Image = Buffer.from(imgArrayBuffer).toString("base64");
+        const mimeType = attachment.contentType || "image/png";
+
+        const response = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: [
             {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard and whether the Roblox username '${reg.roblox_username}' appears on it. Also determine if the match resulted in a victory for this player. Respond strictly in JSON format: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`,
-                },
-                {
-                  type: "image_url",
-                  image_url: { url: attachment.url },
-                },
-              ],
+              inlineData: {
+                data: base64Image,
+                mimeType: mimeType,
+              },
+            },
+            {
+              text: `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard and whether the Roblox username '${reg.roblox_username}' appears on it. Also determine if the match resulted in a victory for this player. Respond strictly in JSON format: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`,
             },
           ],
-          response_format: { type: "json_object" },
         });
 
-        analysis = JSON.parse(response.choices[0].message.content);
+        let rawText = response.text().trim();
+        // Clean markdown code blocks if returned
+        if (rawText.startsWith("```json")) {
+          rawText = rawText.replace(/^```json/, "").replace(/```$/, "").trim();
+        } else if (rawText.startsWith("```")) {
+          rawText = rawText.replace(/^```/, "").replace(/```\$/, "").trim();
+        }
+
+        analysis = JSON.parse(rawText);
       } catch (err) {
-        console.error("OpenAI Vision API Error:", err);
-        return interaction.editReply("❌ Failed to analyze screenshot with AI vision.");
+        console.error("Gemini Vision API Error:", err);
+        return interaction.editReply("❌ Failed to analyze screenshot with Gemini vision.");
       }
 
       if (!analysis.isDuelHistory) {
