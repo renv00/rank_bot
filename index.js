@@ -28,3 +28,14 @@ process.on('uncaughtException', (err) => {
 });
 
 console.log("Starting bot...");
+
+const token = process.env.DISCORD_TOKEN;
+
+if (!token) {
+  console.error("CRITICAL ERROR: process.env.DISCORD_TOKEN is undefined! Check variable name in FadeHost.");
+  process.exit(1);
+}
+
+client.login(token).catch((err) => {
+  console.error("FAILED TO LOGIN TO DISCORD:", err);
+});
