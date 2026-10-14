@@ -67,12 +67,18 @@ const ranks = ["Unranked", "Amateur", "Contender", "Comp", "Elite", "Supreme"];
 const commandDefinitions = [
   new SlashCommandBuilder()
     .setName("startgame")
-    .setDescription("Start a ranked game")
-    .addStringOption((o) =>
-      o.setName("team1").setDescription("Team 1 usernames, separated by commas").setRequired(true)
+    .setDescription("Start a ranked game using Discord users")
+    .addUserOption((o) =>
+      o.setName("team1_player1").setDescription("Team 1 - Player 1").setRequired(true)
     )
-    .addStringOption((o) =>
-      o.setName("team2").setDescription("Team 2 usernames, separated by commas").setRequired(true)
+    .addUserOption((o) =>
+      o.setName("team2_player1").setDescription("Team 2 - Player 1").setRequired(true)
+    )
+    .addUserOption((o) =>
+      o.setName("team1_player2").setDescription("Team 1 - Player 2 (Optional)").setRequired(false)
+    )
+    .addUserOption((o) =>
+      o.setName("team2_player2").setDescription("Team 2 - Player 2 (Optional)").setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -267,30 +273,66 @@ client.on("interactionCreate", async (interaction) => {
     else if (commandName === "startgame") {
       await interaction.deferReply();
 
-      const rawT1 = options.getString("team1", true);
-      const rawT2 = options.getString("team2", true);
+      // Collect all mentioned Discord users
+      const t1p1 = options.getUser("team1_player1", true);
+      const t2p1 = options.getUser("team2_player1", true);
+      const t1p2 = options.getUser("team1_player2");
+      const t2p2 = options.getUser("team2_player2");
 
-      const t1Names = rawT1.split(",").map((s) => s.trim()).filter(Boolean);
-      const t2Names = rawT2.split(",").map((s) => s.trim()).filter(Boolean);
+      const team1Users = [t1p1, t1p2].filter(Boolean);
+      const team2Users = [t2p1, t2p2].filter(Boolean);
+      const allUsers = [...team1Users, ...team2Users];
 
-      const maxPlayers = t1Names.length + t2Names.length;
-      const gameId = Date.now().toString().slice(-6);
+      // Check if host and all players are registered
+      const unregistered = [];
+      const gamePlayers = [];
+
+      for (const u of allUsers) {
+        const reg = getRegistry(u.id);
+        if (!reg) {
+          unregistered.push(`<@${u.id}>`);
+        } else {
+          const teamNum = team1Users.some((p) => p.id === u.id) ? 1 : 2;
+          gamePlayers.push({
+            userId: u.id,
+            username: reg.roblox_username,
+            team: teamNum,
+          });
+        }
+      }
+
+      // If anyone is not registered, block game creation
+      if (unregistered.length > 0) {
+        return interaction.editReply(
+          `❌ Cannot start game! The following player(s) must run \`/register\` first: ${unregistered.join(", ")}`
+        );
+      }
+
+      // Initialize database game and in-memory lobby
+      const game = createGame(user.id, gamePlayers);
+      const gameId = game.id.toString();
 
       activeLobbies.set(gameId, {
         host: user.id,
-        maxPlayers: maxPlayers || 2,
+        maxPlayers: allUsers.length,
         players: [{ id: user.id, username: user.username }],
       });
 
+      const t1Pings = team1Users.map((u) => `<@${u.id}>`).join(", ");
+      const t2Pings = team2Users.map((u) => `<@${u.id}>`).join(", ");
+
       const embed = new EmbedBuilder()
-        .setTitle("Pending game")
+        .setTitle(`Pending game #${gameId}`)
         .setColor(0x2b2d31)
         .setDescription(
-          `----------------------------------------\n\nWaiting for players to join...\n\n**Players (1/${maxPlayers || 2}):**\n1. <@${user.id}>`
+          `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n**Players Joined (1/${allUsers.length}):**\n1. <@${user.id}>`
         );
 
       const joinButton = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`join_game_${gameId}`).setLabel("Join").setStyle(ButtonStyle.Success)
+        new ButtonBuilder()
+          .setCustomId(`join_game_${gameId}`)
+          .setLabel("Join")
+          .setStyle(ButtonStyle.Success)
       );
 
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
