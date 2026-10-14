@@ -13,15 +13,27 @@ import {
 } from "discord.js";
 import { ImageAnnotatorClient } from "@google-cloud/vision";
 
-// Reconstruct credentials from FadeHost split variables
+// Helper to sanitize and format private keys from environment variables
+function getFormattedPrivateKey(key) {
+  if (!key) return undefined;
+  
+  // Un-escape any backslashes and normalize newline characters
+  let formatted = key.replace(/\\n/g, "\n").trim();
+  
+  // Strip quotes if added by environment variable inputs
+  if (formatted.startsWith('"') && formatted.endsWith('"')) {
+    formatted = formatted.slice(1, -1);
+  }
+  
+  return formatted;
+}
+
 const visionClient = new ImageAnnotatorClient({
   credentials: {
-    client_email: process.env.GOOGLE_CLIENT_EMAIL,
-    private_key: process.env.GOOGLE_PRIVATE_KEY
-      ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n")
-      : undefined,
+    client_email: process.env.GOOGLE_CLIENT_EMAIL?.trim(),
+    private_key: getFormattedPrivateKey(process.env.GOOGLE_PRIVATE_KEY),
   },
-  projectId: process.env.GOOGLE_PROJECT_ID,
+  projectId: process.env.GOOGLE_PROJECT_ID?.trim(),
 });
 import {
   player,
