@@ -66,20 +66,14 @@ const ranks = ["Unranked", "Amateur", "Contender", "Comp", "Elite", "Supreme"];
 
 const commandDefinitions = [
   new SlashCommandBuilder()
-    .setName("startgame")
-    .setDescription("Start a ranked game using Discord users")
-    .addUserOption((o) =>
-      o.setName("team1_player1").setDescription("Team 1 - Player 1").setRequired(true)
-    )
-    .addUserOption((o) =>
-      o.setName("team2_player1").setDescription("Team 2 - Player 1").setRequired(true)
-    )
-    .addUserOption((o) =>
-      o.setName("team1_player2").setDescription("Team 1 - Player 2 (Optional)").setRequired(false)
-    )
-    .addUserOption((o) =>
-      o.setName("team2_player2").setDescription("Team 2 - Player 2 (Optional)").setRequired(false)
-    ),
+  .setName("startgame")
+  .setDescription("Start a ranked game")
+  .addStringOption((o) =>
+    o.setName("team1").setDescription("Tag Team 1 members (e.g. @user1, @user2)").setRequired(true)
+  )
+  .addStringOption((o) =>
+    o.setName("team2").setDescription("Tag Team 2 members (e.g. @user3, @user4)").setRequired(true)
+  ),
 
   new SlashCommandBuilder()
     .setName("register")
@@ -269,74 +263,75 @@ client.on("interactionCreate", async (interaction) => {
       });
     }
 
-    /* ---------------- /startgame ---------------- */
-    else if (commandName === "startgame") {
-      await interaction.deferReply();
+/* ---------------- /startgame ---------------- */
+else if (commandName === "startgame") {
+  await interaction.deferReply();
 
-      // Collect all mentioned Discord users
-      const t1p1 = options.getUser("team1_player1", true);
-      const t2p1 = options.getUser("team2_player1", true);
-      const t1p2 = options.getUser("team1_player2");
-      const t2p2 = options.getUser("team2_player2");
+  const rawT1 = options.getString("team1", true);
+  const rawT2 = options.getString("team2", true);
 
-      const team1Users = [t1p1, t1p2].filter(Boolean);
-      const team2Users = [t2p1, t2p2].filter(Boolean);
-      const allUsers = [...team1Users, ...team2Users];
+  // Extract Discord User IDs from mentions like <@123456789>
+  const extractUserIds = (text) => [...text.matchAll(/<@!?(\d+)>/g)].map((m) => m[1]);
 
-      // Check if host and all players are registered
-      const unregistered = [];
-      const gamePlayers = [];
+  const t1Ids = extractUserIds(rawT1);
+  const t2Ids = extractUserIds(rawT2);
 
-      for (const u of allUsers) {
-        const reg = getRegistry(u.id);
-        if (!reg) {
-          unregistered.push(`<@${u.id}>`);
-        } else {
-          const teamNum = team1Users.some((p) => p.id === u.id) ? 1 : 2;
-          gamePlayers.push({
-            userId: u.id,
-            username: reg.roblox_username,
-            team: teamNum,
-          });
-        }
-      }
+  if (!t1Ids.length || !t2Ids.length) {
+    return interaction.editReply("❌ Please tag at least one valid Discord user (@mention) for each team!");
+  }
 
-      // If anyone is not registered, block game creation
-      if (unregistered.length > 0) {
-        return interaction.editReply(
-          `❌ Cannot start game! The following player(s) must run \`/register\` first: ${unregistered.join(", ")}`
-        );
-      }
+  const allIds = [...new Set([...t1Ids, ...t2Ids])];
+  const unregistered = [];
+  const gamePlayers = [];
 
-      // Initialize database game and in-memory lobby
-      const game = createGame(user.id, gamePlayers);
-      const gameId = game.id.toString();
-
-      activeLobbies.set(gameId, {
-        host: user.id,
-        maxPlayers: allUsers.length,
-        players: [{ id: user.id, username: user.username }],
+  for (const id of allIds) {
+    const reg = getRegistry(id);
+    if (!reg) {
+      unregistered.push(`<@${id}>`);
+    } else {
+      const teamNum = t1Ids.includes(id) ? 1 : 2;
+      gamePlayers.push({
+        userId: id,
+        username: reg.roblox_username,
+        team: teamNum,
       });
-
-      const t1Pings = team1Users.map((u) => `<@${u.id}>`).join(", ");
-      const t2Pings = team2Users.map((u) => `<@${u.id}>`).join(", ");
-
-      const embed = new EmbedBuilder()
-        .setTitle(`Pending game #${gameId}`)
-        .setColor(0x2b2d31)
-        .setDescription(
-          `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n**Players Joined (1/${allUsers.length}):**\n1. <@${user.id}>`
-        );
-
-      const joinButton = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`join_game_${gameId}`)
-          .setLabel("Join")
-          .setStyle(ButtonStyle.Success)
-      );
-
-      await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
+  }
+
+  if (unregistered.length > 0) {
+    return interaction.editReply(
+      `❌ Cannot start game! The following player(s) must run \`/register\` first: ${unregistered.join(", ")}`
+    );
+  }
+
+  const game = createGame(user.id, gamePlayers);
+  const gameId = game.id.toString();
+
+  activeLobbies.set(gameId, {
+    host: user.id,
+    maxPlayers: allIds.length,
+    players: [{ id: user.id, username: user.username }],
+  });
+
+  const t1Pings = t1Ids.map((id) => `<@${id}>`).join(", ");
+  const t2Pings = t2Ids.map((id) => `<@${id}>`).join(", ");
+
+  const embed = new EmbedBuilder()
+    .setTitle(`Pending game #${gameId}`)
+    .setColor(0x2b2d31)
+    .setDescription(
+      `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n**Players Joined (1/${allIds.length}):**\n1. <@${user.id}>`
+    );
+
+  const joinButton = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`join_game_${gameId}`)
+      .setLabel("Join")
+      .setStyle(ButtonStyle.Success)
+  );
+
+  await interaction.editReply({ embeds: [embed], components: [joinButton] });
+}
 
     /* ---------------- /submit ---------------- */
     else if (commandName === "submit") {
