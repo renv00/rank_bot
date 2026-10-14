@@ -162,14 +162,22 @@ const commandDefinitions = [
 client.once("ready", async () => {
   console.log(`✅ Logged in successfully as ${client.user.tag}! Bot is online.`);
 
-  // Sync slash commands globally on boot
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
-    console.log("Syncing slash commands with Discord...");
+
+    // 1. Wipe duplicate guild-level commands from all joined servers
+    const guilds = await client.guilds.fetch();
+    for (const [guildId] of guilds) {
+      await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body: [] });
+    }
+    console.log("🧹 Cleared old guild-specific command duplicates.");
+
+    // 2. Set clean global commands
+    console.log("Syncing global slash commands with Discord...");
     await rest.put(Routes.applicationCommands(client.user.id), {
       body: commandDefinitions.map((cmd) => cmd.toJSON()),
     });
-    console.log("✅ Slash commands successfully synced with Discord!");
+    console.log("✅ Global slash commands successfully synced!");
   } catch (err) {
     console.error("Failed to sync slash commands:", err);
   }
@@ -288,7 +296,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-/* ---------------- /submit ---------------- */
+    /* ---------------- /submit ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -318,7 +326,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      // If the user is NOT the host of a recent game, block execution
+      // Block execution if the user is NOT the host
       if (!hostGame) {
         return interaction.editReply(
           "❌ You aren't the host of a recent game you played, only the host can submit."
@@ -338,7 +346,7 @@ client.on("interactionCreate", async (interaction) => {
       // 4. Verify 'Duel History' Header in Screenshot
       if (!scannedText.includes("duel history")) {
         return interaction.editReply(
-          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header at the top[cite: 5]. Please upload a clear screenshot of your recent duel history."
+          "❌ **Invalid Screenshot:** The uploaded image does not contain the **'Duel History'** header at the top. Please upload a clear screenshot of your recent duel history."
         );
       }
 
@@ -346,7 +354,7 @@ client.on("interactionCreate", async (interaction) => {
       const usernameWithAt = `@${registeredUsername}`;
       if (!scannedText.includes(usernameWithAt) && !scannedText.includes(registeredUsername)) {
         return interaction.editReply(
-          `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this Duel History screenshot[cite: 5].`
+          `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this Duel History screenshot.`
         );
       }
 
