@@ -1,1 +1,0 @@
-{"name":"ranked-discord-bot","version":"0.1.0","type":"module","scripts":{"start":"node src/index.js","deploy":"node src/deploy-commands.js"},"dependencies":{"better-sqlite3":"^12.4.1","discord.js":"^14.24.0","dotenv":"^16.6.1","sharp":"^0.34.3","tesseract.js":"^6.0.1"}}
