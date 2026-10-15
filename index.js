@@ -12,7 +12,7 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
 } from "discord.js";
-import OpenAI from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 import {
   player,
   ensure,
@@ -37,19 +37,9 @@ import {
   getPendingClaims,
 } from "./db.js";
 
-// Initialize OpenAI Client pointing to OpenRouter API
-const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
-
-if (!openrouterKey) {
-  console.error("⚠️ WARNING: OPENROUTER_API_KEY is not set in environment variables!");
-} else {
-  console.log("🔑 OpenRouter API Key loaded successfully!");
-}
-
-const openai = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: openrouterKey || "",
-});
+// Initialize Google AI Studio Client
+const openrouterKey = process.env.GEMINI_API_KEY?.trim();
+const genAI = new GoogleGenerativeAI(openrouterKey || "");
 
 // ---------------- GLOBAL ERROR HANDLERS ----------------
 process.on("unhandledRejection", (reason, promise) => {
@@ -213,7 +203,7 @@ client.on("interactionCreate", async (interaction) => {
       lobby.players.push({ id: interaction.user.id, username: interaction.user.username });
 
       const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setDescription(
-        `----------------------------------------\n\nWaiting for players to join...\n\n**Players (${lobby.players.length}/${lobby.maxPlayers}):**\n` +
+        `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${lobby.t1Pings}\n**Team 2:** ${lobby.t2Pings}\n\n**Players Joined (${lobby.players.length}/${lobby.maxPlayers}):**\n` +
           lobby.players.map((p, i) => `${i + 1}. <@${p.id}>`).join("\n")
       );
 
@@ -292,21 +282,16 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply("❌ Please tag at least one valid Discord user (@mention) for each team!");
       }
 
-      const allIds = [...new Set([...t1Ids, ...t2Ids])];
+      // Keep all mentions so duplicate slots count correctly toward total slots
+      const allMentionIds = [...t1Ids, ...t2Ids];
+      const uniqueIds = [...new Set(allMentionIds)];
       const unregistered = [];
       const gamePlayers = [];
 
-      for (const id of allIds) {
+      for (const id of uniqueIds) {
         const reg = getRegistry(id);
         if (!reg) {
           unregistered.push(`<@${id}>`);
-        } else {
-          const teamNum = t1Ids.includes(id) ? 1 : 2;
-          gamePlayers.push({
-            userId: id,
-            username: reg.roblox_username,
-            team: teamNum,
-          });
         }
       }
 
@@ -316,23 +301,35 @@ client.on("interactionCreate", async (interaction) => {
         );
       }
 
+      // Populate game players keeping slot assignments
+      for (const id of t1Ids) {
+        const reg = getRegistry(id);
+        gamePlayers.push({ userId: id, username: reg.roblox_username, team: 1 });
+      }
+      for (const id of t2Ids) {
+        const reg = getRegistry(id);
+        gamePlayers.push({ userId: id, username: reg.roblox_username, team: 2 });
+      }
+
       const game = createGame(user.id, gamePlayers);
       const gameId = game.id.toString();
 
-      activeLobbies.set(gameId, {
-        host: user.id,
-        maxPlayers: allIds.length,
-        players: [{ id: user.id, username: user.username }],
-      });
-
       const t1Pings = t1Ids.map((id) => `<@${id}>`).join(", ");
       const t2Pings = t2Ids.map((id) => `<@${id}>`).join(", ");
+
+      activeLobbies.set(gameId, {
+        host: user.id,
+        maxPlayers: allMentionIds.length,
+        players: [{ id: user.id, username: user.username }],
+        t1Pings,
+        t2Pings,
+      });
 
       const embed = new EmbedBuilder()
         .setTitle(`Pending game #${gameId}`)
         .setColor(0x2b2d31)
         .setDescription(
-          `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n**Players Joined (1/${allIds.length}):**\n1. <@${user.id}>`
+          `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n**Players Joined (1/${allMentionIds.length}):**\n1. <@${user.id}>`
         );
 
       const joinButton = new ActionRowBuilder().addComponents(
@@ -342,15 +339,9 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-    /* ---------------- /submit HANDLER (OpenRouter Free Vision) ---------------- */
+    /* ---------------- /submit HANDLER ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
-
-      if (!openrouterKey) {
-        return interaction.editReply(
-          "❌ **Bot Configuration Error:** `OPENROUTER_API_KEY` environment variable is missing!"
-        );
-      }
 
       const reg = getRegistry(user.id);
       if (!reg) {
@@ -380,28 +371,41 @@ client.on("interactionCreate", async (interaction) => {
       const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
+      // 🛡️ ANTI-EXPLOIT: Check if this exact screenshot URL has already been submitted
+      // (Assuming match database has screenshot_url stored or checked)
+      if (game.screenshot_url === attachment.url) {
+        return interaction.editReply("❌ **Error:** This exact screenshot has already been submitted and processed for this match!");
+      }
+
       let analysis;
       try {
-        const response = await openai.chat.completions.create({
-          model: "openrouter/free", // Automatically routes to available free vision model
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `Analyze this Roblox game screenshot. Check if it displays a 'Duel History' results page and if the Roblox username '${reg.roblox_username}' appears on it. Determine if the host won. Respond ONLY in strict valid JSON: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`,
-                },
-                {
-                  type: "image_url",
-                  image_url: { url: attachment.url },
-                },
-              ],
-            },
-          ],
-        });
+        const imgRes = await fetch(attachment.url);
+        const imgArrayBuffer = await imgRes.arrayBuffer();
+        const base64Image = Buffer.from(imgArrayBuffer).toString("base64");
+        const mimeType = attachment.contentType || "image/png";
 
-        let rawText = response.choices[0]?.message?.content?.trim() || "";
+        const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
+
+        // Build list of expected usernames from the game lobby
+        const expectedUsernames = game.players.map((p) => p.username).join(", ");
+
+        const prompt = `Analyze this Roblox screenshot. Check if it displays a 'Duel History' scoreboard. 
+Verify whether the host username '${reg.roblox_username}' and expected participants (${expectedUsernames}) appear on it.
+Determine if the match resulted in a victory for host '${reg.roblox_username}'.
+Respond strictly in valid JSON format with no markdown blocks: 
+{"isDuelHistory": boolean, "usernameFound": boolean, "allPlayersVerified": boolean, "hostWon": boolean}`;
+
+        const result = await model.generateContent([
+          prompt,
+          {
+            inlineData: {
+              data: base64Image,
+              mimeType: mimeType,
+            },
+          },
+        ]);
+
+        let rawText = result.response.text().trim();
         if (rawText.startsWith("```json")) {
           rawText = rawText.replace(/^```json/, "").replace(/```$/, "").trim();
         } else if (rawText.startsWith("```")) {
@@ -410,8 +414,8 @@ client.on("interactionCreate", async (interaction) => {
 
         analysis = JSON.parse(rawText);
       } catch (err) {
-        console.error("OpenRouter API Error:", err);
-        return interaction.editReply(`❌ Failed to analyze screenshot with OpenRouter: ${err.message}`);
+        console.error("Gemini Vision API Error:", err);
+        return interaction.editReply("❌ Failed to analyze screenshot with AI vision.");
       }
 
       if (!analysis.isDuelHistory) {
@@ -423,6 +427,12 @@ client.on("interactionCreate", async (interaction) => {
       if (!analysis.usernameFound) {
         return interaction.editReply(
           `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this screenshot.`
+        );
+      }
+
+      if (!analysis.allPlayersVerified) {
+        return interaction.editReply(
+          `❌ **Roster Mismatch:** The scoreboard in this screenshot does not match the players registered in the /startgame lobby (${game.players.map(p => p.username).join(", ")}).`
         );
       }
 
