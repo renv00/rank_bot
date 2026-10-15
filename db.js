@@ -122,17 +122,6 @@ export function activeGamesForPlayer(userId) {
   );
 }
 
-export function activeGame(userId) {
-  const games = db.prepare("SELECT * FROM games WHERE status = 'pending'").all();
-  for (const g of games) {
-    const players = JSON.parse(g.players);
-    if (g.started_by === userId || players.some(p => (p.user_id || p.userId) === userId)) {
-      return { ...g, players };
-    }
-  }
-  return null;
-}
-
 export function completeGame(gameId, winnerId, screenshotUrl) {
   db.prepare("UPDATE games SET status = 'completed', screenshot_url = ? WHERE id = ?").run(screenshotUrl, gameId);
 }
