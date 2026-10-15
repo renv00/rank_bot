@@ -1,5 +1,4 @@
 import "dotenv/config";
-import { Client, GatewayIntentBits, ... } from "discord.js";
 import OpenAI from "openai";
 import crypto from "crypto";
 import { placementRank, rxp } from "./ranking.js";
