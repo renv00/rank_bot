@@ -543,19 +543,30 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       });
     }
 
-    /* ---------------- /stats ---------------- */
+   /* ---------------- /stats ---------------- */
     else if (commandName === "stats") {
       const targetUser = options.getUser("user") || user;
       const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
-      const p = player(targetUser.id);
-      const reg = getRegistry(targetUser.id);
-
+      
       const displayName = targetMember?.displayName || targetUser.username;
-      const robloxTag = reg ? `@${reg.roblox_username}` : "@Unregistered";
+      const reg = getRegistry(targetUser.id); // Check registration status
 
-      const currentRank = p.rank || "Unranked";
-      const ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
-      const rxpString = currentRank === "Unranked" ? `${p.rxp || 0} / 100` : getRxpDisplay(currentRank, p.rxp || 0);
+      let rankDisplay = "Unranked";
+      let ratingDisplay = "N/A";
+      let rxpDisplay = "N/A";
+      let kdaDisplay = "N/A";
+      let wlDisplay = "N/A";
+      let robloxTag = "@Unregistered";
+
+      if (reg) {
+        robloxTag = `@${reg.roblox_username}`;
+        const p = player(targetUser.id); // Only load player stats if registered
+        rankDisplay = p.rank || "Unranked";
+        ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
+        rxpDisplay = rankDisplay === "Unranked" ? `${p.rxp || 0} / 100` : getRxpDisplay(rankDisplay, p.rxp || 0);
+        kdaDisplay = `${p.kills || 0} / ${p.deaths || 0} / ${p.assists || 0}`;
+        wlDisplay = `${p.wins || 0} / ${p.losses || 0}`;
+      }
 
       const embed = new EmbedBuilder()
         .setTitle("📊  |    Player Statistics")
@@ -563,11 +574,11 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         .setThumbnail(targetUser.displayAvatarURL({ extension: "png", size: 256 }))
         .addFields(
           { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
-          { name: "Rank", value: `${currentRank}`, inline: true },
+          { name: "Rank", value: `${rankDisplay}`, inline: true },
           { name: "Rating", value: `${ratingDisplay}`, inline: true },
-          { name: "RXP Progress", value: `${rxpString}`, inline: true },
-          { name: "K / D / A", value: `${p.kills} / ${p.deaths} / ${p.assists}`, inline: true },
-          { name: "W / L", value: `${p.wins} / ${p.losses}`, inline: true }
+          { name: "RXP Progress", value: `${rxpDisplay}`, inline: true },
+          { name: "K / D / A", value: `${kdaDisplay}`, inline: true },
+          { name: "W / L", value: `${wlDisplay}`, inline: true }
         );
 
       await interaction.reply({ embeds: [embed] });
