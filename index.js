@@ -11,8 +11,10 @@ import {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
+  AttachmentBuilder,
 } from "discord.js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from "openai";
+import { createCanvas, loadImage } from "canvas";
 import {
   player,
   ensure,
@@ -37,9 +39,19 @@ import {
   getPendingClaims,
 } from "./db.js";
 
-// Initialize Google AI Studio Client
-const openrouterKey = process.env.GEMINI_API_KEY?.trim();
-const genAI = new GoogleGenerativeAI(openrouterKey || "");
+// Initialize OpenAI Client pointing to OpenRouter API
+const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
+
+if (!openrouterKey) {
+  console.error("⚠️ WARNING: OPENROUTER_API_KEY is not set in environment variables!");
+} else {
+  console.log("🔑 OpenRouter API Key loaded successfully!");
+}
+
+const openai = new OpenAI({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: openrouterKey || "",
+});
 
 // ---------------- GLOBAL ERROR HANDLERS ----------------
 process.on("unhandledRejection", (reason, promise) => {
@@ -51,6 +63,88 @@ process.on("uncaughtException", (err) => {
 });
 
 console.log("Starting bot...");
+
+// ---------------- CANVAS STATS CARD GENERATOR ----------------
+async function generateStatsCard(user, member, p, reg) {
+  const width = 800;
+  const height = 450;
+  const canvas = createCanvas(width, height);
+  const ctx = canvas.getContext("2d");
+
+  // 1. Draw Card Background (Rounded Dark Rectangle)
+  ctx.fillStyle = "#0d0d0d";
+  ctx.beginPath();
+  ctx.roundRect(0, 0, width, height, 30);
+  ctx.fill();
+
+  // 2. Load & Draw Circular Discord Avatar
+  const avatarUrl = user.displayAvatarURL({ extension: "png", size: 256 });
+  try {
+    const avatar = await loadImage(avatarUrl);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(120, 130, 70, 0, Math.PI * 2, true);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(avatar, 50, 60, 140, 140);
+    ctx.restore();
+  } catch (e) {
+    // Fallback grey circle if avatar fails to load
+    ctx.fillStyle = "#222222";
+    ctx.beginPath();
+    ctx.arc(120, 130, 70, 0, Math.PI * 2, true);
+    ctx.fill();
+  }
+
+  // 3. Draw Discord Nickname & Roblox @username
+  const displayName = member?.displayName || user.username;
+  const robloxTag = reg ? `@${reg.roblox_username}` : "@Unregistered";
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 38px 'Sans-Serif'";
+  ctx.fillText(displayName, 220, 110);
+
+  ctx.fillStyle = "#aaaaaa";
+  ctx.font = "22px 'Sans-Serif'";
+  ctx.fillText(robloxTag, 220, 142);
+
+  // 4. Draw Stats Grid
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "24px 'Sans-Serif'";
+
+  // Left Column
+  ctx.fillText(`Rank :  ${p.rank || "Unranked"}`, 220, 220);
+  ctx.fillText(`Rating :  ${p.rating ?? "N/A"}`, 220, 265);
+
+  // Right Column
+  ctx.fillText(`KDA :  ${p.kills}/${p.deaths}/${p.assists}`, 480, 220);
+  ctx.fillText(`W/L :  ${p.wins}/${p.losses}`, 480, 265);
+
+  // 5. Draw RXP Text & Progress Bar
+  const currentRxp = p.rxp || 0;
+  const maxRxp = 100; // Next rank threshold target
+  const rxpRatio = Math.min(1, Math.max(0, currentRxp / maxRxp));
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "22px 'Sans-Serif'";
+  ctx.fillText(`RXP : ${currentRxp}/${maxRxp}`, 50, 355);
+
+  // Background Bar
+  ctx.fillStyle = "#1a1a1a";
+  ctx.beginPath();
+  ctx.roundRect(50, 370, 700, 30, 15);
+  ctx.fill();
+
+  // Progress Fill Bar
+  if (rxpRatio > 0) {
+    ctx.fillStyle = "#c8c8c8";
+    ctx.beginPath();
+    ctx.roundRect(50, 370, Math.max(30, 700 * rxpRatio), 30, 15);
+    ctx.fill();
+  }
+
+  return canvas.toBuffer("image/png");
+}
 
 // ---------------- CLIENT SETUP ----------------
 const client = new Client({
@@ -282,7 +376,6 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply("❌ Please tag at least one valid Discord user (@mention) for each team!");
       }
 
-      // Keep all mentions so duplicate slots count correctly toward total slots
       const allMentionIds = [...t1Ids, ...t2Ids];
       const uniqueIds = [...new Set(allMentionIds)];
       const unregistered = [];
@@ -301,7 +394,6 @@ client.on("interactionCreate", async (interaction) => {
         );
       }
 
-      // Populate game players keeping slot assignments
       for (const id of t1Ids) {
         const reg = getRegistry(id);
         gamePlayers.push({ userId: id, username: reg.roblox_username, team: 1 });
@@ -339,9 +431,15 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-    /* ---------------- /submit HANDLER ---------------- */
+    /* ---------------- /submit HANDLER (OpenRouter Vision) ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
+
+      if (!openrouterKey) {
+        return interaction.editReply(
+          "❌ **Bot Configuration Error:** `OPENROUTER_API_KEY` environment variable is missing!"
+        );
+      }
 
       const reg = getRegistry(user.id);
       if (!reg) {
@@ -371,41 +469,39 @@ client.on("interactionCreate", async (interaction) => {
       const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
-      // 🛡️ ANTI-EXPLOIT: Check if this exact screenshot URL has already been submitted
-      // (Assuming match database has screenshot_url stored or checked)
+      // Anti-Exploit: Check if screenshot attachment URL was already processed
       if (game.screenshot_url === attachment.url) {
         return interaction.editReply("❌ **Error:** This exact screenshot has already been submitted and processed for this match!");
       }
 
       let analysis;
       try {
-        const imgRes = await fetch(attachment.url);
-        const imgArrayBuffer = await imgRes.arrayBuffer();
-        const base64Image = Buffer.from(imgArrayBuffer).toString("base64");
-        const mimeType = attachment.contentType || "image/png";
-
-        const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
-
-        // Build list of expected usernames from the game lobby
         const expectedUsernames = game.players.map((p) => p.username).join(", ");
 
-        const prompt = `Analyze this Roblox screenshot. Check if it displays a 'Duel History' scoreboard. 
-Verify whether the host username '${reg.roblox_username}' and expected participants (${expectedUsernames}) appear on it.
+        const response = await openai.chat.completions.create({
+          model: "openrouter/free",
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard.
+Verify whether the host username '${reg.roblox_username}' and lobby participants (${expectedUsernames}) appear on it.
 Determine if the match resulted in a victory for host '${reg.roblox_username}'.
 Respond strictly in valid JSON format with no markdown blocks: 
-{"isDuelHistory": boolean, "usernameFound": boolean, "allPlayersVerified": boolean, "hostWon": boolean}`;
-
-        const result = await model.generateContent([
-          prompt,
-          {
-            inlineData: {
-              data: base64Image,
-              mimeType: mimeType,
+{"isDuelHistory": boolean, "usernameFound": boolean, "allPlayersVerified": boolean, "hostWon": boolean}`,
+                },
+                {
+                  type: "image_url",
+                  image_url: { url: attachment.url },
+                },
+              ],
             },
-          },
-        ]);
+          ],
+        });
 
-        let rawText = result.response.text().trim();
+        let rawText = response.choices[0]?.message?.content?.trim() || "";
         if (rawText.startsWith("```json")) {
           rawText = rawText.replace(/^```json/, "").replace(/```$/, "").trim();
         } else if (rawText.startsWith("```")) {
@@ -414,8 +510,8 @@ Respond strictly in valid JSON format with no markdown blocks:
 
         analysis = JSON.parse(rawText);
       } catch (err) {
-        console.error("Gemini Vision API Error:", err);
-        return interaction.editReply("❌ Failed to analyze screenshot with AI vision.");
+        console.error("OpenRouter API Error:", err);
+        return interaction.editReply(`❌ Failed to analyze screenshot with OpenRouter: ${err.message}`);
       }
 
       if (!analysis.isDuelHistory) {
@@ -483,23 +579,24 @@ Respond strictly in valid JSON format with no markdown blocks:
       });
     }
 
-    /* ---------------- /stats ---------------- */
+    /* ---------------- /stats (Canvas Card) ---------------- */
     else if (commandName === "stats") {
+      await interaction.deferReply();
+
       const targetUser = options.getUser("user") || user;
+      const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
       const p = player(targetUser.id);
+      const reg = getRegistry(targetUser.id);
+
+      const imageBuffer = await generateStatsCard(targetUser, targetMember, p, reg);
+      const attachment = new AttachmentBuilder(imageBuffer, { name: "stats-card.png" });
 
       const embed = new EmbedBuilder()
-        .setTitle(`Stats for ${targetUser.username}`)
-        .setColor(0x00aeef)
-        .addFields(
-          { name: "Rank", value: `${p.rank}`, inline: true },
-          { name: "Rating", value: `${p.rating ?? "N/A"}`, inline: true },
-          { name: "RXP", value: `${p.rxp}`, inline: true },
-          { name: "W / L", value: `${p.wins} / ${p.losses}`, inline: true },
-          { name: "K / D / A", value: `${p.kills} / ${p.deaths} / ${p.assists}`, inline: true }
-        );
+        .setTitle("📊  |    Statistics")
+        .setColor(0x0d0d0d)
+        .setImage("attachment://stats-card.png");
 
-      await interaction.reply({ embeds: [embed] });
+      await interaction.editReply({ embeds: [embed], files: [attachment] });
     }
 
     /* ---------------- /rm ---------------- */
