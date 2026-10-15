@@ -68,6 +68,31 @@ CREATE TABLE IF NOT EXISTS players (
   );
 `);
 
+// Add these functions inside db.js
+
+export function getPlayerMatchCount(userId) {
+  const row = db.prepare("SELECT COUNT(*) as count FROM matches WHERE user_id = ?").get(userId);
+  return row ? row.count : 0;
+}
+
+export function createGame(startedBy, playersList) {
+  // Check if host already has an active pending game
+  const existing = db.prepare("SELECT id FROM games WHERE started_by = ? AND status = 'pending'").get(startedBy);
+  if (existing) {
+    db.prepare("UPDATE games SET status = 'voided' WHERE id = ?").run(existing.id);
+  }
+
+  const stmt = db.prepare("INSERT INTO games (started_by, players, status) VALUES (?, ?, 'pending')");
+  const info = stmt.run(startedBy, JSON.stringify(playersList));
+  return { id: info.lastInsertRowid, started_by: startedBy, players: playersList };
+}
+
+export function getActiveGameForHost(userId) {
+  const g = db.prepare("SELECT * FROM games WHERE started_by = ? AND status = 'pending' ORDER BY id DESC LIMIT 1").get(userId);
+  if (!g) return null;
+  return { ...g, players: JSON.parse(g.players) };
+}
+
 export function ensure(userId) {
   let p = db.prepare("SELECT * FROM players WHERE user_id = ?").get(userId);
   if (!p) {
