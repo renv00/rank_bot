@@ -1,3 +1,4 @@
+import { generateStatsCardImage } from "./statsCard.js";
 import "dotenv/config";
 import {
   Client,
@@ -494,30 +495,29 @@ Respond strictly in valid JSON format with no markdown blocks:
       });
     }
 
-    /* ---------------- /stats (Clean Embed Layout) ---------------- */
+    /* ---------------- /stats (Rendered Card Image Output) ---------------- */
     else if (commandName === "stats") {
+      await interaction.deferReply();
+
       const targetUser = options.getUser("user") || user;
       const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
       const p = player(targetUser.id);
       const reg = getRegistry(targetUser.id);
 
-      const displayName = targetMember?.displayName || targetUser.username;
-      const robloxTag = reg ? `@${reg.roblox_username}` : "@Unregistered";
+      try {
+        const imageBuffer = await generateStatsCardImage(targetUser, targetMember, p, reg);
+        const attachment = new AttachmentBuilder(imageBuffer, { name: "stats-card.png" });
 
-      const embed = new EmbedBuilder()
-        .setTitle("📊  |    Statistics")
-        .setColor(0x0d0d0d)
-        .setThumbnail(targetUser.displayAvatarURL({ extension: "png", size: 256 }))
-        .addFields(
-          { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
-          { name: "Rank", value: `${p.rank || "Unranked"}`, inline: true },
-          { name: "Rating", value: `${p.rating ?? "N/A"}`, inline: true },
-          { name: "RXP", value: `${p.rxp || 0} / 100`, inline: true },
-          { name: "K / D / A", value: `${p.kills} / ${p.deaths} / ${p.assists}`, inline: true },
-          { name: "W / L", value: `${p.wins} / ${p.losses}`, inline: true }
-        );
+        const embed = new EmbedBuilder()
+          .setTitle("📊  |    Statistics")
+          .setColor(0x0b0b0b)
+          .setImage("attachment://stats-card.png");
 
-      await interaction.reply({ embeds: [embed] });
+        await interaction.editReply({ embeds: [embed], files: [attachment] });
+      } catch (err) {
+        console.error("Failed to render stats card image:", err);
+        await interaction.editReply("❌ An error occurred while generating your stats card image.");
+      }
     }
 
     /* ---------------- /rm ---------------- */
