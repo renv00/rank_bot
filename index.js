@@ -11,10 +11,8 @@ import {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
-  AttachmentBuilder,
 } from "discord.js";
 import OpenAI from "openai";
-import { createCanvas, loadImage } from "canvas";
 import {
   player,
   ensure,
@@ -63,88 +61,6 @@ process.on("uncaughtException", (err) => {
 });
 
 console.log("Starting bot...");
-
-// ---------------- CANVAS STATS CARD GENERATOR ----------------
-async function generateStatsCard(user, member, p, reg) {
-  const width = 800;
-  const height = 450;
-  const canvas = createCanvas(width, height);
-  const ctx = canvas.getContext("2d");
-
-  // 1. Draw Card Background (Rounded Dark Rectangle)
-  ctx.fillStyle = "#0d0d0d";
-  ctx.beginPath();
-  ctx.roundRect(0, 0, width, height, 30);
-  ctx.fill();
-
-  // 2. Load & Draw Circular Discord Avatar
-  const avatarUrl = user.displayAvatarURL({ extension: "png", size: 256 });
-  try {
-    const avatar = await loadImage(avatarUrl);
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(120, 130, 70, 0, Math.PI * 2, true);
-    ctx.closePath();
-    ctx.clip();
-    ctx.drawImage(avatar, 50, 60, 140, 140);
-    ctx.restore();
-  } catch (e) {
-    // Fallback grey circle if avatar fails to load
-    ctx.fillStyle = "#222222";
-    ctx.beginPath();
-    ctx.arc(120, 130, 70, 0, Math.PI * 2, true);
-    ctx.fill();
-  }
-
-  // 3. Draw Discord Nickname & Roblox @username
-  const displayName = member?.displayName || user.username;
-  const robloxTag = reg ? `@${reg.roblox_username}` : "@Unregistered";
-
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "bold 38px 'Sans-Serif'";
-  ctx.fillText(displayName, 220, 110);
-
-  ctx.fillStyle = "#aaaaaa";
-  ctx.font = "22px 'Sans-Serif'";
-  ctx.fillText(robloxTag, 220, 142);
-
-  // 4. Draw Stats Grid
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "24px 'Sans-Serif'";
-
-  // Left Column
-  ctx.fillText(`Rank :  ${p.rank || "Unranked"}`, 220, 220);
-  ctx.fillText(`Rating :  ${p.rating ?? "N/A"}`, 220, 265);
-
-  // Right Column
-  ctx.fillText(`KDA :  ${p.kills}/${p.deaths}/${p.assists}`, 480, 220);
-  ctx.fillText(`W/L :  ${p.wins}/${p.losses}`, 480, 265);
-
-  // 5. Draw RXP Text & Progress Bar
-  const currentRxp = p.rxp || 0;
-  const maxRxp = 100; // Next rank threshold target
-  const rxpRatio = Math.min(1, Math.max(0, currentRxp / maxRxp));
-
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "22px 'Sans-Serif'";
-  ctx.fillText(`RXP : ${currentRxp}/${maxRxp}`, 50, 355);
-
-  // Background Bar
-  ctx.fillStyle = "#1a1a1a";
-  ctx.beginPath();
-  ctx.roundRect(50, 370, 700, 30, 15);
-  ctx.fill();
-
-  // Progress Fill Bar
-  if (rxpRatio > 0) {
-    ctx.fillStyle = "#c8c8c8";
-    ctx.beginPath();
-    ctx.roundRect(50, 370, Math.max(30, 700 * rxpRatio), 30, 15);
-    ctx.fill();
-  }
-
-  return canvas.toBuffer("image/png");
-}
 
 // ---------------- CLIENT SETUP ----------------
 const client = new Client({
@@ -431,7 +347,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-    /* ---------------- /submit HANDLER (OpenRouter Vision) ---------------- */
+    /* ---------------- /submit HANDLER ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -469,7 +385,6 @@ client.on("interactionCreate", async (interaction) => {
       const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
-      // Anti-Exploit: Check if screenshot attachment URL was already processed
       if (game.screenshot_url === attachment.url) {
         return interaction.editReply("❌ **Error:** This exact screenshot has already been submitted and processed for this match!");
       }
@@ -579,24 +494,30 @@ Respond strictly in valid JSON format with no markdown blocks:
       });
     }
 
-    /* ---------------- /stats (Canvas Card) ---------------- */
+    /* ---------------- /stats (Clean Embed Layout) ---------------- */
     else if (commandName === "stats") {
-      await interaction.deferReply();
-
       const targetUser = options.getUser("user") || user;
       const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
       const p = player(targetUser.id);
       const reg = getRegistry(targetUser.id);
 
-      const imageBuffer = await generateStatsCard(targetUser, targetMember, p, reg);
-      const attachment = new AttachmentBuilder(imageBuffer, { name: "stats-card.png" });
+      const displayName = targetMember?.displayName || targetUser.username;
+      const robloxTag = reg ? `@${reg.roblox_username}` : "@Unregistered";
 
       const embed = new EmbedBuilder()
         .setTitle("📊  |    Statistics")
         .setColor(0x0d0d0d)
-        .setImage("attachment://stats-card.png");
+        .setThumbnail(targetUser.displayAvatarURL({ extension: "png", size: 256 }))
+        .addFields(
+          { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
+          { name: "Rank", value: `${p.rank || "Unranked"}`, inline: true },
+          { name: "Rating", value: `${p.rating ?? "N/A"}`, inline: true },
+          { name: "RXP", value: `${p.rxp || 0} / 100`, inline: true },
+          { name: "K / D / A", value: `${p.kills} / ${p.deaths} / ${p.assists}`, inline: true },
+          { name: "W / L", value: `${p.wins} / ${p.losses}`, inline: true }
+        );
 
-      await interaction.editReply({ embeds: [embed], files: [attachment] });
+      await interaction.reply({ embeds: [embed] });
     }
 
     /* ---------------- /rm ---------------- */
