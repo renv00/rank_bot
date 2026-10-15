@@ -1,3 +1,4 @@
+import "dotenv/config"; // Force load environment variables from .env if present
 import {
   Client,
   GatewayIntentBits,
@@ -36,8 +37,17 @@ import {
   getPendingClaims,
 } from "./db.js";
 
-// Initialize Google AI Studio Client (100% Free Tier, No Billing Needed)
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// Fetch key cleanly and strip any stray quotes/whitespace
+const geminiKey = process.env.GEMINI_API_KEY?.trim().replace(/^["']|["']\$/g, "");
+
+if (!geminiKey) {
+  console.error("⚠️ WARNING: GEMINI_API_KEY is not defined in process.env!");
+} else {
+  console.log(`🔑 GEMINI_API_KEY loaded successfully (length: ${geminiKey.length})`);
+}
+
+// Initialize Google AI Studio Client
+const genAI = new GoogleGenerativeAI(geminiKey || "");
 
 // ---------------- GLOBAL ERROR HANDLERS ----------------
 process.on("unhandledRejection", (reason, promise) => {
@@ -334,6 +344,12 @@ client.on("interactionCreate", async (interaction) => {
     else if (commandName === "submit") {
       await interaction.deferReply();
 
+      if (!geminiKey) {
+        return interaction.editReply(
+          "❌ **Bot Configuration Error:** `GEMINI_API_KEY` is missing in FadeHost environment variables!"
+        );
+      }
+
       const reg = getRegistry(user.id);
       if (!reg) {
         return interaction.editReply(
@@ -369,7 +385,7 @@ client.on("interactionCreate", async (interaction) => {
         const base64Image = Buffer.from(imgArrayBuffer).toString("base64");
         const mimeType = attachment.contentType || "image/png";
 
-        const model = genAI.getGenerativeModel({ model: "gemini-3.8-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
         const prompt = `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard and whether the Roblox username '${reg.roblox_username}' appears on it. Also determine if the match resulted in a victory for this player. Respond strictly in valid JSON format with no markdown blocks: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`;
 
@@ -393,7 +409,7 @@ client.on("interactionCreate", async (interaction) => {
         analysis = JSON.parse(rawText);
       } catch (err) {
         console.error("Gemini Vision API Error:", err);
-        return interaction.editReply("❌ Failed to analyze screenshot with Gemini vision.");
+        return interaction.editReply(`❌ Failed to analyze screenshot with Gemini vision: ${err.message}`);
       }
 
       if (!analysis.isDuelHistory) {
