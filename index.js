@@ -1,5 +1,9 @@
-import { generateStatsCardImage } from "./statsCard.js";
 import "dotenv/config";
+import { Client, GatewayIntentBits, ... } from "discord.js";
+import OpenAI from "openai";
+import crypto from "crypto";
+import { placementRank, rxp } from "./ranking.js";
+import { getRxpDisplay, checkRankProgression } from "./progression.js";
 import {
   Client,
   GatewayIntentBits,
@@ -348,7 +352,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-    /* ---------------- /submit HANDLER ---------------- */
+/* ---------------- /submit HANDLER ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -386,31 +390,48 @@ client.on("interactionCreate", async (interaction) => {
       const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
-      if (game.screenshot_url === attachment.url) {
-        return interaction.editReply("❌ **Error:** This exact screenshot has already been submitted and processed for this match!");
+      // Download binary image data & check SHA-256 duplicate hash
+      let imageBuffer;
+      try {
+        const response = await fetch(attachment.url);
+        const arrayBuffer = await response.arrayBuffer();
+        imageBuffer = Buffer.from(arrayBuffer);
+      } catch (err) {
+        return interaction.editReply("❌ Failed to download the attached image file.");
+      }
+
+      if (isImageHashUsed(imageBuffer)) {
+        return interaction.editReply(
+          "❌ **Duplicate Submission Detected:** This exact screenshot image has already been submitted to the bot!"
+        );
       }
 
       let analysis;
       try {
         const expectedUsernames = game.players.map((p) => p.username).join(", ");
+        const base64Image = imageBuffer.toString("base64");
+        const mimeType = attachment.contentType || "image/png";
 
         const response = await openai.chat.completions.create({
-          model: "openrouter/free",
+          model: "google/gemini-2.0-flash-lite-preview-02-05:free",
           messages: [
             {
               role: "user",
               content: [
                 {
                   type: "text",
-                  text: `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard.
-Verify whether the host username '${reg.roblox_username}' and lobby participants (${expectedUsernames}) appear on it.
-Determine if the match resulted in a victory for host '${reg.roblox_username}'.
-Respond strictly in valid JSON format with no markdown blocks: 
+                  text: `Analyze this image carefully.
+1. Is this a Roblox game scoreboard / 'Duel History' results screen?
+2. Is the registered host username '${reg.roblox_username}' clearly visible on the scoreboard?
+3. Are all these lobby participants (${expectedUsernames}) present on the scoreboard?
+4. Did the host '${reg.roblox_username}' WIN this match?
+
+Respond ONLY with raw valid JSON, no markdown codeblock formatting:
 {"isDuelHistory": boolean, "usernameFound": boolean, "allPlayersVerified": boolean, "hostWon": boolean}`,
                 },
                 {
                   type: "image_url",
-                  image_url: { url: attachment.url },
+                  image_url: { url: `data:${mimeType};base64,${base64Image}` },
                 },
               ],
             },
@@ -427,12 +448,12 @@ Respond strictly in valid JSON format with no markdown blocks:
         analysis = JSON.parse(rawText);
       } catch (err) {
         console.error("OpenRouter API Error:", err);
-        return interaction.editReply(`❌ Failed to analyze screenshot with OpenRouter: ${err.message}`);
+        return interaction.editReply(`❌ Failed to analyze screenshot with AI Vision: ${err.message}`);
       }
 
       if (!analysis.isDuelHistory) {
         return interaction.editReply(
-          "❌ **Invalid Screenshot:** The uploaded image does not contain the 'Duel History' page. Please upload a clear screenshot."
+          "❌ **Invalid Screenshot:** The uploaded image does not contain a valid Roblox 'Duel History' page."
         );
       }
 
@@ -444,9 +465,12 @@ Respond strictly in valid JSON format with no markdown blocks:
 
       if (!analysis.allPlayersVerified) {
         return interaction.editReply(
-          `❌ **Roster Mismatch:** The scoreboard in this screenshot does not match the players registered in the /startgame lobby (${game.players.map(p => p.username).join(", ")}).`
+          `❌ **Roster Mismatch:** The scoreboard in this screenshot does not match all players registered in the /startgame lobby (${game.players.map(p => p.username).join(", ")}).`
         );
       }
+
+      // Record image hash in DB to prevent re-submitting ever again
+      recordImageHash(imageBuffer, user.id, game.id);
 
       const hostWon = analysis.hostWon;
       completeGame(game.id, user.id, attachment.url);
@@ -458,7 +482,22 @@ Respond strictly in valid JSON format with no markdown blocks:
       for (const w of winners) {
         const targetId = w.user_id || w.userId;
         const p = ensure(targetId);
-        patch(targetId, { rxp: p.rxp + 50, wins: p.wins + 1 });
+        
+        // Calculate match performance RXP (bounded between 20 and 35)
+        const earnedRxp = rxp({ sf: 5, sa: w.conceded || 0, k: w.kills || 5, d: w.deaths || 2, a: w.assists || 2, place: 1 });
+        
+        const updatedData = checkRankProgression({
+          rank: p.rank || "Amateur",
+          rxp: (p.rxp || 200) + earnedRxp,
+          rating: p.rating || 6.0
+        });
+
+        patch(targetId, { 
+          rxp: updatedData.rxp, 
+          rank: updatedData.rank, 
+          rating: updatedData.rating, 
+          wins: p.wins + 1 
+        });
       }
 
       if (!hostWon) {
