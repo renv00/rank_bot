@@ -1,8 +1,4 @@
 import "dotenv/config";
-import OpenAI from "openai";
-import crypto from "crypto";
-import { placementRank, rxp } from "./ranking.js";
-import { getRxpDisplay, checkRankProgression } from "./progression.js";
 import {
   Client,
   GatewayIntentBits,
@@ -17,6 +13,8 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import OpenAI from "openai";
+import crypto from "crypto";
+
 import {
   player,
   ensure,
@@ -39,7 +37,12 @@ import {
   resetRegistry,
   setPendingClaim,
   getPendingClaims,
+  isImageHashUsed,
+  recordImageHash,
 } from "./db.js";
+
+import { placementRank, rxp } from "./ranking.js";
+import { getRxpDisplay, checkRankProgression } from "./progression.js";
 
 // Initialize OpenAI Client pointing to OpenRouter API
 const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
@@ -351,7 +354,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-/* ---------------- /submit HANDLER ---------------- */
+    /* ---------------- /submit HANDLER ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -389,7 +392,6 @@ client.on("interactionCreate", async (interaction) => {
       const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
-      // Download binary image data & check SHA-256 duplicate hash
       let imageBuffer;
       try {
         const response = await fetch(attachment.url);
@@ -468,7 +470,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         );
       }
 
-      // Record image hash in DB to prevent re-submitting ever again
       recordImageHash(imageBuffer, user.id, game.id);
 
       const hostWon = analysis.hostWon;
@@ -482,7 +483,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         const targetId = w.user_id || w.userId;
         const p = ensure(targetId);
         
-        // Calculate match performance RXP (bounded between 20 and 35)
         const earnedRxp = rxp({ sf: 5, sa: w.conceded || 0, k: w.kills || 5, d: w.deaths || 2, a: w.assists || 2, place: 1 });
         
         const updatedData = checkRankProgression({
@@ -533,7 +533,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       });
     }
 
-    /* ---------------- /stats (Embed Display with Custom Progression) ---------------- */
+    /* ---------------- /stats ---------------- */
     else if (commandName === "stats") {
       const targetUser = options.getUser("user") || user;
       const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
@@ -543,7 +543,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       const displayName = targetMember?.displayName || targetUser.username;
       const robloxTag = reg ? `@${reg.roblox_username}` : "@Unregistered";
 
-      // Import getRxpDisplay to show e.g. "200/350"
       const currentRank = p.rank || "Amateur";
       const rxpString = getRxpDisplay(currentRank, p.rxp || 200);
 
