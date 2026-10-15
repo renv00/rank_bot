@@ -336,35 +336,24 @@ client.on("interactionCreate", async (interaction) => {
         gamePlayers.push({ userId: id, username: reg.roblox_username, team: 2 });
       }
 
+      // Create a locked active game session in DB
       const game = createGame(user.id, gamePlayers);
       const gameId = game.id.toString();
 
       const t1Pings = t1Ids.map((id) => `<@${id}>`).join(", ");
       const t2Pings = t2Ids.map((id) => `<@${id}>`).join(", ");
 
-      activeLobbies.set(gameId, {
-        host: user.id,
-        maxPlayers: allMentionIds.length,
-        players: [{ id: user.id, username: user.username }],
-        t1Pings,
-        t2Pings,
-      });
-
       const embed = new EmbedBuilder()
-        .setTitle(`Pending game #${gameId}`)
+        .setTitle(`⚔️ Active Ranked Game #${gameId}`)
         .setColor(0x2b2d31)
         .setDescription(
-          `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n**Players Joined (1/${allMentionIds.length}):**\n1. <@${user.id}>`
+          `----------------------------------------\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n📌 **Host (@${getRegistry(user.id).roblox_username}):** Play your match, take a screenshot of the **Duel History**, and run \`/submit\` to record the results.`
         );
 
-      const joinButton = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`join_game_${gameId}`).setLabel("Join").setStyle(ButtonStyle.Success)
-      );
-
-      await interaction.editReply({ embeds: [embed], components: [joinButton] });
+      await interaction.editReply({ embeds: [embed] });
     }
-
-    /* ---------------- /submit HANDLER ---------------- */
+      
+   /* ---------------- /submit HANDLER ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -381,27 +370,17 @@ client.on("interactionCreate", async (interaction) => {
         );
       }
 
-      const activeGames = activeGamesForPlayer(user.id);
-      let hostGame = activeGames.find((g) => g.started_by === user.id);
-
-      if (!hostGame) {
-        for (const [id, lobby] of activeLobbies.entries()) {
-          if (lobby.host === user.id) {
-            hostGame = { id: id, started_by: user.id };
-            break;
-          }
-        }
-      }
-
-      if (!hostGame) {
+      // 🛡️ STRICT GAME BINDING: Check if this user has an active hosted game waiting for submission
+      const activeGame = getActiveGameForHost(user.id);
+      if (!activeGame) {
         return interaction.editReply(
-          "❌ You aren't the host of a recent game you played, only the host can submit."
+          "❌ You do not have an active game lobby waiting for a submission! Start a new game using `/startgame` first."
         );
       }
 
-      const game = getGame(hostGame.id) || { id: hostGame.id, players: [] };
       const attachment = options.getAttachment("screenshot", true);
 
+      // Download image binary data & verify SHA-256 hash (prevents reuse of old screenshots)
       let imageBuffer;
       try {
         const response = await fetch(attachment.url);
@@ -413,13 +392,13 @@ client.on("interactionCreate", async (interaction) => {
 
       if (isImageHashUsed(imageBuffer)) {
         return interaction.editReply(
-          "❌ **Duplicate Submission Detected:** This exact screenshot image has already been submitted to the bot!"
+          "❌ **Duplicate Submission Detected:** This exact screenshot has already been submitted and processed!"
         );
       }
 
       let analysis;
       try {
-        const expectedUsernames = game.players.map((p) => p.username).join(", ");
+        const expectedUsernames = activeGame.players.map((p) => p.username).join(", ");
         const base64Image = imageBuffer.toString("base64");
         const mimeType = attachment.contentType || "image/png";
 
@@ -462,126 +441,77 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         return interaction.editReply(`❌ Failed to analyze screenshot with AI Vision: ${err.message}`);
       }
 
-      if (!analysis.isDuelHistory) {
+      if (!analysis.isDuelHistory || !analysis.usernameFound || !analysis.allPlayersVerified) {
         return interaction.editReply(
-          "❌ **Invalid Screenshot:** The uploaded image does not contain a valid Roblox 'Duel History' page."
+          "❌ **Verification Failed:** The screenshot could not be verified as a valid Duel History matching your active lobby roster."
         );
       }
 
-      if (!analysis.usernameFound) {
-        return interaction.editReply(
-          `❌ **Username Mismatch:** Your registered Roblox username (**@${reg.roblox_username}**) was not detected in this screenshot.`
-        );
-      }
-
-      if (!analysis.allPlayersVerified) {
-        return interaction.editReply(
-          `❌ **Roster Mismatch:** The scoreboard in this screenshot does not match all players registered in the /startgame lobby (${game.players.map(p => p.username).join(", ")}).`
-        );
-      }
-
-      recordImageHash(imageBuffer, user.id, game.id);
+      // Record image hash so this screenshot can never be used again
+      recordImageHash(imageBuffer, user.id, activeGame.id);
+      completeGame(activeGame.id, user.id, attachment.url);
 
       const hostWon = analysis.hostWon;
-      completeGame(game.id, user.id, attachment.url);
+      const hostTeam = activeGame.players.find((p) => (p.user_id || p.userId) === user.id)?.team || 1;
+      const winners = activeGame.players.filter((p) => p.team === (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
+      const losers = activeGame.players.filter((p) => p.team !== (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
 
-      const hostTeam = game.players.find((p) => (p.user_id || p.userId) === user.id)?.team || 1;
-      const winners = game.players.filter((p) => p.team === (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
-      const losers = game.players.filter((p) => p.team !== (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
-
+      // Process rewards and placement matches for each winner
       for (const w of winners) {
         const targetId = w.user_id || w.userId;
         const p = ensure(targetId);
-        
-        const earnedRxp = rxp({ sf: 5, sa: w.conceded || 0, k: w.kills || 5, d: w.deaths || 2, a: w.assists || 2, place: 1 });
-        
-        const updatedData = checkRankProgression({
-          rank: p.rank || "Amateur",
-          rxp: (p.rxp || 200) + earnedRxp,
-          rating: p.rating || 6.0
-        });
+        const matchCount = getPlayerMatchCount(targetId);
 
-        patch(targetId, { 
-          rxp: updatedData.rxp, 
-          rank: updatedData.rank, 
-          rating: updatedData.rating, 
-          wins: p.wins + 1 
-        });
+        if (matchCount < 5) {
+          // Log placement match record (e.g. 5-0 score format for wins)
+          match(targetId, 5, hostWon ? 0 : 2, 5, 2, 2, 25);
+          
+          const updatedMatchesCount = getPlayerMatchCount(targetId);
+          if (updatedMatchesCount === 5) {
+            // Evaluate all 5 placement matches
+            const userMatches = placements(targetId);
+            const formattedMatches = userMatches.map(m => ({ scoreFor: m.score_for, scoreAgainst: m.score_against }));
+            const placementResult = placementRank(formattedMatches);
+
+            if (placementResult) {
+              const [assignedRank, assignedRating] = placementResult;
+              const startingRxp = assignedRank === "Contender" ? 400 : 200;
+              patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, wins: p.wins + 1 });
+            } else {
+              patch(targetId, { rank: "Amateur", rating: 6.0, rxp: 200, wins: p.wins + 1 });
+            }
+          } else {
+            patch(targetId, { wins: p.wins + 1 });
+          }
+        } else {
+          // Regular ranked match RXP distribution
+          const earnedRxp = rxp({ sf: 5, sa: 0, k: 5, d: 2, a: 2, place: 1 });
+          const updatedData = checkRankProgression({
+            rank: p.rank || "Amateur",
+            rxp: (p.rxp || 200) + earnedRxp,
+            rating: p.rating || 6.0
+          });
+
+          patch(targetId, { 
+            rxp: updatedData.rxp, 
+            rank: updatedData.rank, 
+            rating: updatedData.rating, 
+            wins: p.wins + 1 
+          });
+        }
       }
 
       if (!hostWon) {
-        setPendingClaim(game.id, losers);
+        setPendingClaim(activeGame.id, losers);
         const loserPings = losers.map((l) => `<@${l.user_id || l.userId}>`).join(", ");
-
         return interaction.editReply(
-          ` Match result recorded!\n🏆 **Winning Team awarded automatically.**\n📢 ${loserPings}: Your team lost this game. Run \`/claim "roblox_username"\` to claim your RXP!`
+          ` Match result recorded!\n🏆 **Winning Team verified.**\n📢 ${loserPings}: Your team lost. Run \`/claim "roblox_username"\` to claim participation RXP!`
         );
       }
 
       return interaction.editReply(
-        ` Match result recorded!\n🏆 **VICTORY verified for host @${reg.roblox_username}!** RXP automatically distributed to winning team members.`
+        ` Match result recorded!\n🏆 **VICTORY verified for host @${reg.roblox_username}!** Roster rewards processed successfully.`
       );
-    }
-
-    /* ---------------- /claim ---------------- */
-    else if (commandName === "claim") {
-      const username = options.getString("username", true).trim();
-      const reg = getRegistry(user.id);
-
-      if (!reg || reg.roblox_username.toLowerCase() !== username.toLowerCase()) {
-        return interaction.reply({
-          content: `❌ Username mismatch! Your registered username is **${reg?.roblox_username || "None"}**.`,
-          ephemeral: true,
-        });
-      }
-
-      const p = ensure(user.id);
-      patch(user.id, { rxp: p.rxp + 15, losses: p.losses + 1 });
-
-      return interaction.reply({
-        content: `✅ Claim successful! Added +15 RXP and recorded match participation for **${username}**.`,
-      });
-    }
-
-   /* ---------------- /stats ---------------- */
-    else if (commandName === "stats") {
-      const targetUser = options.getUser("user") || user;
-      const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
-      
-      const displayName = targetMember?.displayName || targetUser.username;
-      const reg = getRegistry(targetUser.id); // Check registration status
-
-      let rankDisplay = "Unranked";
-      let ratingDisplay = "N/A";
-      let rxpDisplay = "N/A";
-      let kdaDisplay = "N/A";
-      let wlDisplay = "N/A";
-      let robloxTag = "@Unregistered";
-
-      if (reg) {
-        robloxTag = `@${reg.roblox_username}`;
-        const p = player(targetUser.id); // Only load player stats if registered
-        rankDisplay = p.rank || "Unranked";
-        ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
-        rxpDisplay = rankDisplay === "Unranked" ? `${p.rxp || 0} / 100` : getRxpDisplay(rankDisplay, p.rxp || 0);
-        kdaDisplay = `${p.kills || 0} / ${p.deaths || 0} / ${p.assists || 0}`;
-        wlDisplay = `${p.wins || 0} / ${p.losses || 0}`;
-      }
-
-      const embed = new EmbedBuilder()
-        .setTitle("📊  |    Player Statistics")
-        .setColor(0x0b0b0b)
-        .setThumbnail(targetUser.displayAvatarURL({ extension: "png", size: 256 }))
-        .addFields(
-          { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
-          { name: "Rank", value: `${rankDisplay}`, inline: true },
-          { name: "Rating", value: `${ratingDisplay}`, inline: true },
-          { name: "RXP Progress", value: `${rxpDisplay}`, inline: true },
-          { name: "K / D / A", value: `${kdaDisplay}`, inline: true },
-          { name: "W / L", value: `${wlDisplay}`, inline: true }
-        );
-
-      await interaction.reply({ embeds: [embed] });
     }
 
     /* ---------------- /rm ---------------- */
