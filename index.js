@@ -30,7 +30,6 @@ import {
   createGame,
   getGame,
   activeGamesForPlayer,
-  activeGame,
   completeGame,
   getRegistry,
   setRegistry,
