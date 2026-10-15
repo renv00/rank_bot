@@ -1,4 +1,4 @@
-import "dotenv/config"; // Force load environment variables from .env if present
+import "dotenv/config";
 import {
   Client,
   GatewayIntentBits,
@@ -12,7 +12,7 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
 } from "discord.js";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import OpenAI from "openai";
 import {
   player,
   ensure,
@@ -37,17 +37,19 @@ import {
   getPendingClaims,
 } from "./db.js";
 
-// Fetch key cleanly and strip any stray quotes/whitespace
-const geminiKey = process.env.GEMINI_API_KEY?.trim().replace(/^["']|["']\$/g, "");
+// Initialize OpenAI Client pointing to OpenRouter API
+const openrouterKey = process.env.OPENROUTER_API_KEY?.trim();
 
-if (!geminiKey) {
-  console.error("⚠️ WARNING: GEMINI_API_KEY is not defined in process.env!");
+if (!openrouterKey) {
+  console.error("⚠️ WARNING: OPENROUTER_API_KEY is not set in environment variables!");
 } else {
-  console.log(`🔑 GEMINI_API_KEY loaded successfully (length: ${geminiKey.length})`);
+  console.log("🔑 OpenRouter API Key loaded successfully!");
 }
 
-// Initialize Google AI Studio Client
-const genAI = new GoogleGenerativeAI(geminiKey || "");
+const openai = new OpenAI({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: openrouterKey || "",
+});
 
 // ---------------- GLOBAL ERROR HANDLERS ----------------
 process.on("unhandledRejection", (reason, promise) => {
@@ -340,13 +342,13 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [joinButton] });
     }
 
-    /* ---------------- /submit HANDLER (Gemini AI Studio Vision) ---------------- */
+    /* ---------------- /submit HANDLER (OpenRouter Free Vision) ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
-      if (!geminiKey) {
+      if (!openrouterKey) {
         return interaction.editReply(
-          "❌ **Bot Configuration Error:** `GEMINI_API_KEY` is missing in FadeHost environment variables!"
+          "❌ **Bot Configuration Error:** `OPENROUTER_API_KEY` environment variable is missing!"
         );
       }
 
@@ -380,26 +382,26 @@ client.on("interactionCreate", async (interaction) => {
 
       let analysis;
       try {
-        const imgRes = await fetch(attachment.url);
-        const imgArrayBuffer = await imgRes.arrayBuffer();
-        const base64Image = Buffer.from(imgArrayBuffer).toString("base64");
-        const mimeType = attachment.contentType || "image/png";
-
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-        const prompt = `Analyze this Roblox screenshot. Check if it displays a 'Duel History' results scoreboard and whether the Roblox username '${reg.roblox_username}' appears on it. Also determine if the match resulted in a victory for this player. Respond strictly in valid JSON format with no markdown blocks: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`;
-
-        const result = await model.generateContent([
-          prompt,
-          {
-            inlineData: {
-              data: base64Image,
-              mimeType: mimeType,
+        const response = await openai.chat.completions.create({
+          model: "openrouter/free", // Automatically routes to available free vision model
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: `Analyze this Roblox game screenshot. Check if it displays a 'Duel History' results page and if the Roblox username '${reg.roblox_username}' appears on it. Determine if the host won. Respond ONLY in strict valid JSON: {"isDuelHistory": boolean, "usernameFound": boolean, "hostWon": boolean}`,
+                },
+                {
+                  type: "image_url",
+                  image_url: { url: attachment.url },
+                },
+              ],
             },
-          },
-        ]);
+          ],
+        });
 
-        let rawText = result.response.text().trim();
+        let rawText = response.choices[0]?.message?.content?.trim() || "";
         if (rawText.startsWith("```json")) {
           rawText = rawText.replace(/^```json/, "").replace(/```$/, "").trim();
         } else if (rawText.startsWith("```")) {
@@ -408,8 +410,8 @@ client.on("interactionCreate", async (interaction) => {
 
         analysis = JSON.parse(rawText);
       } catch (err) {
-        console.error("Gemini Vision API Error:", err);
-        return interaction.editReply(`❌ Failed to analyze screenshot with Gemini vision: ${err.message}`);
+        console.error("OpenRouter API Error:", err);
+        return interaction.editReply(`❌ Failed to analyze screenshot with OpenRouter: ${err.message}`);
       }
 
       if (!analysis.isDuelHistory) {
