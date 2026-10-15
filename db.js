@@ -1,471 +1,161 @@
 import Database from "better-sqlite3";
-import path from "node:path";
-import process from "node:process";
+import crypto from "crypto";
 
-// Resolve an absolute path to avoid permission / working directory errors
-const dbPath = path.resolve(process.cwd(), "ranked.sqlite");
+const db = new Database("bot.db");
 
-let db;
-try {
-  db = new Database(dbPath);
-  db.pragma("journal_mode=WAL");
-} catch (err) {
-  console.error("Failed to initialize SQLite database at:", dbPath, err);
-  throw err;
-}
-
+// Initialize tables
 db.exec(`
-CREATE TABLE IF NOT EXISTS players (
-  user_id TEXT PRIMARY KEY,
-  rank TEXT NOT NULL DEFAULT 'Unranked',
-  rating REAL,
-  rxp INTEGER NOT NULL DEFAULT 0,
-  wins INTEGER NOT NULL DEFAULT 0,
-  losses INTEGER NOT NULL DEFAULT 0,
-  kills INTEGER NOT NULL DEFAULT 0,
-  deaths INTEGER NOT NULL DEFAULT 0,
-  assists INTEGER NOT NULL DEFAULT 0,
-  placement_games INTEGER NOT NULL DEFAULT 0,
-  placement_complete INTEGER NOT NULL DEFAULT 0
-);
+  CREATE TABLE IF NOT EXISTS players (
+    user_id TEXT PRIMARY KEY,
+    rank TEXT DEFAULT 'Amateur',
+    rating REAL DEFAULT 6.0,
+    rxp INTEGER DEFAULT 200,
+    kills INTEGER DEFAULT 0,
+    deaths INTEGER DEFAULT 0,
+    assists INTEGER DEFAULT 0,
+    wins INTEGER DEFAULT 0,
+    losses INTEGER DEFAULT 0
+  );
 
-CREATE TABLE IF NOT EXISTS matches (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  image_hash TEXT,
-  player_user_id TEXT,
-  match_type TEXT,
-  score_for INTEGER,
-  score_against INTEGER,
-  kills INTEGER,
-  deaths INTEGER,
-  assists INTEGER,
-  placement INTEGER,
-  won INTEGER,
-  rxp INTEGER,
-  image_url TEXT,
-  voided INTEGER DEFAULT 0,
-  created_at INTEGER
-);
+  CREATE TABLE IF NOT EXISTS registry (
+    discord_id TEXT PRIMARY KEY,
+    roblox_username TEXT NOT NULL
+  );
 
-CREATE TABLE IF NOT EXISTS placements (
-  user_id TEXT,
-  match_id INTEGER,
-  score_for INTEGER,
-  score_against INTEGER
-);
+  CREATE TABLE IF NOT EXISTS matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    score_for INTEGER,
+    score_against INTEGER,
+    kills INTEGER,
+    deaths INTEGER,
+    assists INTEGER,
+    rxp INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-CREATE TABLE IF NOT EXISTS games (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  started_by TEXT NOT NULL,
-  started_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active',
-  submitted_by TEXT,
-  screenshot_hash TEXT,
-  completed_at INTEGER
-);
+  CREATE TABLE IF NOT EXISTS games (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_by TEXT,
+    players TEXT,
+    status TEXT DEFAULT 'pending',
+    screenshot_url TEXT
+  );
 
-CREATE TABLE IF NOT EXISTS game_players (
-  game_id INTEGER NOT NULL,
-  user_id TEXT NOT NULL,
-  username TEXT NOT NULL,
-  team INTEGER NOT NULL,
-  PRIMARY KEY (game_id, user_id)
-);
+  CREATE TABLE IF NOT EXISTS pending_claims (
+    game_id INTEGER,
+    user_id TEXT,
+    roblox_username TEXT
+  );
 
-CREATE TABLE IF NOT EXISTS registry (
-  discord_id TEXT PRIMARY KEY,
-  roblox_username TEXT NOT NULL UNIQUE
-);
-
-CREATE TABLE IF NOT EXISTS pending_claims (
-  game_id INTEGER PRIMARY KEY,
-  losing_team_json TEXT NOT NULL,
-  claimed_users_json TEXT NOT NULL DEFAULT '[]'
-);
+  CREATE TABLE IF NOT EXISTS submitted_images (
+    hash TEXT PRIMARY KEY,
+    submitted_by TEXT,
+    game_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
-/* ---------------- PLAYERS ---------------- */
-
-export function ensure(id) {
-  db.prepare("INSERT OR IGNORE INTO players(user_id) VALUES(?)").run(id);
-  return db.prepare("SELECT * FROM players WHERE user_id=?").get(id);
+export function ensure(userId) {
+  let p = db.prepare("SELECT * FROM players WHERE user_id = ?").get(userId);
+  if (!p) {
+    db.prepare("INSERT INTO players (user_id) VALUES (?)").run(userId);
+    p = db.prepare("SELECT * FROM players WHERE user_id = ?").get(userId);
+  }
+  return p;
 }
 
-export function player(id) {
-  return ensure(id);
+export function player(userId) {
+  return ensure(userId);
 }
 
-/* ---------------- PLACEMENT ---------------- */
-
-export function placements(id) {
-  return db
-    .prepare(
-      `
-    SELECT
-      score_for AS scoreFor,
-      score_against AS scoreAgainst
-    FROM placements
-    WHERE user_id=?
-    ORDER BY rowid
-  `,
-    )
-    .all(id);
+export function patch(userId, fields) {
+  ensure(userId);
+  const keys = Object.keys(fields);
+  const values = Object.values(fields);
+  const setClause = keys.map((k) => `${k} = ?`).join(", ");
+  db.prepare(`UPDATE players SET ${setClause} WHERE user_id = ?`).run(...values, userId);
 }
 
-export function placementAdd(uid, mid, sf, sa) {
-  db.prepare(
-    `
-    INSERT INTO placements
-    VALUES (?, ?, ?, ?)
-  `,
-  ).run(uid, mid, sf, sa);
+export function reset(userId) {
+  db.prepare(`
+    UPDATE players SET rank = 'Amateur', rating = 6.0, rxp = 200, kills = 0, deaths = 0, assists = 0, wins = 0, losses = 0 
+    WHERE user_id = ?
+  `).run(userId);
 }
 
-/* ---------------- MATCHES ---------------- */
-
-export function match(x) {
-  const result = db
-    .prepare(
-      `
-    INSERT INTO matches (
-      image_hash,
-      player_user_id,
-      match_type,
-      score_for,
-      score_against,
-      kills,
-      deaths,
-      assists,
-      placement,
-      won,
-      rxp,
-      image_url,
-      created_at
-    )
-    VALUES (
-      @hash,
-      @uid,
-      @type,
-      @sf,
-      @sa,
-      @k,
-      @d,
-      @a,
-      @p,
-      @w,
-      @rxp,
-      @url,
-      @now
-    )
-  `,
-    )
-    .run({
-      ...x,
-      now: Date.now(),
-    });
-
-  return result.lastInsertRowid;
+export function recent(userId) {
+  return db.prepare("SELECT * FROM matches WHERE user_id = ? ORDER BY id DESC LIMIT 5").all(userId);
 }
 
-/* ---------------- ACTIVE GAMES ---------------- */
-
-export function createGame(startedBy, players) {
-  const now = Date.now();
-
-  const result = db
-    .prepare(
-      `
-    INSERT INTO games (
-      started_by,
-      started_at,
-      expires_at,
-      status
-    )
-    VALUES (?, ?, ?, 'active')
-  `,
-    )
-    .run(startedBy, now, now + 10 * 60 * 1000);
-
-  const gameId = result.lastInsertRowid;
-
-  const insertPlayer = db.prepare(`
-    INSERT INTO game_players (
-      game_id,
-      user_id,
-      username,
-      team
-    )
-    VALUES (?, ?, ?, ?)
-  `);
-
-  const transaction = db.transaction(() => {
-    for (const p of players) {
-      insertPlayer.run(gameId, p.userId, p.username, p.team);
-    }
-  });
-
-  transaction();
-
-  return getGame(gameId);
+export function leaderboard() {
+  return db.prepare("SELECT * FROM players ORDER BY rxp DESC LIMIT 10").all();
 }
 
-export function getGame(id) {
-  const game = db
-    .prepare(
-      `
-    SELECT *
-    FROM games
-    WHERE id=?
-  `,
-    )
-    .get(id);
+export function getMatch(matchId) {
+  return db.prepare("SELECT * FROM matches WHERE id = ?").get(matchId);
+}
 
-  if (!game) return null;
+export function voidMatch(matchId) {
+  const m = getMatch(matchId);
+  if (!m) return false;
+  db.prepare("DELETE FROM matches WHERE id = ?").run(matchId);
+  return true;
+}
 
-  const players = db
-    .prepare(
-      `
-    SELECT *
-    FROM game_players
-    WHERE game_id=?
-    ORDER BY team, rowid
-  `,
-    )
-    .all(id);
+export function createGame(startedBy, playersList) {
+  const stmt = db.prepare("INSERT INTO games (started_by, players, status) VALUES (?, ?, 'pending')");
+  const info = stmt.run(startedBy, JSON.stringify(playersList));
+  return { id: info.lastInsertRowid, started_by: startedBy, players: playersList };
+}
 
-  return {
-    ...game,
-    players,
-  };
+export function getGame(gameId) {
+  const g = db.prepare("SELECT * FROM games WHERE id = ?").get(gameId);
+  if (!g) return null;
+  return { ...g, players: JSON.parse(g.players) };
 }
 
 export function activeGamesForPlayer(userId) {
-  return db
-    .prepare(
-      `
-    SELECT g.*
-    FROM games g
-    JOIN game_players gp
-      ON gp.game_id = g.id
-    WHERE gp.user_id=?
-      AND g.status='active'
-  `,
-    )
-    .all(userId);
+  const games = db.prepare("SELECT * FROM games WHERE status = 'pending'").all();
+  return games.map(g => ({ ...g, players: JSON.parse(g.players) })).filter(g => 
+    g.started_by === userId || g.players.some(p => (p.user_id || p.userId) === userId)
+  );
 }
 
-export function activeGame(id) {
-  const game = getGame(id);
-
-  if (!game) return null;
-
-  if (game.status === "active" && Date.now() > game.expires_at) {
-    db.prepare(
-      `
-      UPDATE games
-      SET status='expired'
-      WHERE id=?
-    `,
-    ).run(id);
-
-    return {
-      ...game,
-      status: "expired",
-    };
-  }
-
-  return game;
+export function completeGame(gameId, winnerId, screenshotUrl) {
+  db.prepare("UPDATE games SET status = 'completed', screenshot_url = ? WHERE id = ?").run(screenshotUrl, gameId);
 }
-
-export function completeGame(id, submittedBy, screenshotHash) {
-  return db
-    .prepare(
-      `
-    UPDATE games
-    SET
-      status='completed',
-      submitted_by=?,
-      screenshot_hash=?,
-      completed_at=?
-    WHERE id=?
-      AND status='active'
-  `,
-    )
-    .run(submittedBy, screenshotHash, Date.now(), id);
-}
-
-/* ---------------- DUPLICATE SCREENSHOTS ---------------- */
-
-export function dup(hash) {
-  return !!db
-    .prepare(
-      `
-    SELECT 1
-    FROM games
-    WHERE screenshot_hash=?
-    LIMIT 1
-  `,
-    )
-    .get(hash);
-}
-
-/* ---------------- PLAYER UPDATES ---------------- */
-
-export function patch(id, values) {
-  const keys = Object.keys(values);
-
-  if (!keys.length) {
-    return player(id);
-  }
-
-  db.prepare(
-    `
-    UPDATE players
-    SET ${keys.map((k) => `${k}=@${k}`).join(", ")}
-    WHERE user_id=@id
-  `,
-  ).run({
-    ...values,
-    id,
-  });
-
-  return player(id);
-}
-
-/* ---------------- RESET ---------------- */
-
-export function reset(id) {
-  db.prepare(
-    `
-    DELETE FROM placements
-    WHERE user_id=?
-  `,
-  ).run(id);
-
-  db.prepare(
-    `
-    DELETE FROM matches
-    WHERE player_user_id=?
-  `,
-  ).run(id);
-
-  return patch(id, {
-    rank: "Unranked",
-    rating: null,
-    rxp: 0,
-    wins: 0,
-    losses: 0,
-    kills: 0,
-    deaths: 0,
-    assists: 0,
-    placement_games: 0,
-    placement_complete: 0,
-  });
-}
-
-/* ---------------- STATS ---------------- */
-
-export function recent(id) {
-  return db
-    .prepare(
-      `
-    SELECT *
-    FROM matches
-    WHERE player_user_id=?
-      AND voided=0
-    ORDER BY id DESC
-    LIMIT 5
-  `,
-    )
-    .all(id);
-}
-
-/* ---------------- LEADERBOARD ---------------- */
-
-export function leaderboard() {
-  return db
-    .prepare(
-      `
-    SELECT *
-    FROM players
-    WHERE
-      rank='Supreme'
-      OR (
-        rank='Elite'
-        AND rating IN (9, 9.5)
-      )
-    ORDER BY rxp DESC
-    LIMIT 100
-  `,
-    )
-    .all();
-}
-
-/* ---------------- VOID ---------------- */
-
-export function getMatch(id) {
-  return db
-    .prepare(
-      `
-    SELECT *
-    FROM matches
-    WHERE id=?
-      AND voided=0
-  `,
-    )
-    .get(id);
-}
-
-export function voidMatch(id) {
-  const m = getMatch(id);
-
-  if (!m) return null;
-
-  db.prepare(
-    `
-    UPDATE matches
-    SET voided=1
-    WHERE id=?
-  `,
-  ).run(id);
-
-  const p = player(m.player_user_id);
-
-  patch(m.player_user_id, {
-    rxp: Math.max(0, p.rxp - m.rxp),
-    wins: Math.max(0, p.wins - (m.won ? 1 : 0)),
-    losses: Math.max(0, p.losses - (m.won ? 0 : 1)),
-    kills: Math.max(0, p.kills - m.kills),
-    deaths: Math.max(0, p.deaths - m.deaths),
-    assists: Math.max(0, p.assists - m.assists),
-  });
-
-  return m;
-}
-
-/* ---------------- REGISTRY HELPERS ---------------- */
 
 export function getRegistry(discordId) {
-  return db.prepare("SELECT * FROM registry WHERE discord_id=?").get(discordId);
+  return db.prepare("SELECT * FROM registry WHERE discord_id = ?").get(discordId);
 }
 
 export function setRegistry(discordId, robloxUsername) {
-  return db
-    .prepare("INSERT INTO registry (discord_id, roblox_username) VALUES (?, ?)")
-    .run(discordId, robloxUsername);
+  db.prepare("INSERT OR REPLACE INTO registry (discord_id, roblox_username) VALUES (?, ?)").run(discordId, robloxUsername);
 }
 
 export function resetRegistry(discordId) {
-  return db.prepare("DELETE FROM registry WHERE discord_id=?").run(discordId);
+  db.prepare("DELETE FROM registry WHERE discord_id = ?").run(discordId);
 }
 
-export function setPendingClaim(gameId, losingTeam) {
-  return db
-    .prepare("INSERT OR REPLACE INTO pending_claims (game_id, losing_team_json) VALUES (?, ?)")
-    .run(gameId, JSON.stringify(losingTeam));
+export function setPendingClaim(gameId, losersList) {
+  const stmt = db.prepare("INSERT INTO pending_claims (game_id, user_id, roblox_username) VALUES (?, ?, ?)");
+  for (const l of losersList) {
+    stmt.run(gameId, l.user_id || l.userId, l.username);
+  }
 }
 
-export function getPendingClaims() {
-  return db.prepare("SELECT * FROM pending_claims").all();
+export function getPendingClaims(gameId) {
+  return db.prepare("SELECT * FROM pending_claims WHERE game_id = ?").all(gameId);
+}
+
+export function isImageHashUsed(buffer) {
+  const hash = crypto.createHash("sha256").update(buffer).digest("hex");
+  const row = db.prepare("SELECT hash FROM submitted_images WHERE hash = ?").get(hash);
+  return !!row;
+}
+
+export function recordImageHash(buffer, userId, gameId) {
+  const hash = crypto.createHash("sha256").update(buffer).digest("hex");
+  db.prepare("INSERT INTO submitted_images (hash, submitted_by, game_id) VALUES (?, ?, ?)").run(hash, userId, gameId);
 }
