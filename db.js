@@ -84,6 +84,21 @@ export function reset(userId) {
   `).run(userId);
 }
 
+export function match(userId, scoreFor, scoreAgainst, kills, deaths, assists, rxp) {
+  db.prepare(`
+    INSERT INTO matches (user_id, score_for, score_against, kills, deaths, assists, rxp)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(userId, scoreFor, scoreAgainst, kills, deaths, assists, rxp);
+}
+
+export function placements(userId) {
+  return db.prepare("SELECT * FROM matches WHERE user_id = ? ORDER BY id DESC LIMIT 5").all(userId);
+}
+
+export function placementAdd(userId, data) {
+  match(userId, data.scoreFor, data.scoreAgainst, data.kills, data.deaths, data.assists, data.rxp);
+}
+
 export function recent(userId) {
   return db.prepare("SELECT * FROM matches WHERE user_id = ? ORDER BY id DESC LIMIT 5").all(userId);
 }
