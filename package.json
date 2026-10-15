@@ -9,7 +9,6 @@
   },
 "dependencies": {
     "better-sqlite3": "^12.4.1",
-    "canvas": "^2.11.2",
     "discord.js": "^14.24.0",
     "dotenv": "^16.6.1",
     "openai": "^4.86.0"
