@@ -495,29 +495,34 @@ Respond strictly in valid JSON format with no markdown blocks:
       });
     }
 
-    /* ---------------- /stats (Rendered Card Image Output) ---------------- */
+    /* ---------------- /stats (Embed Display with Custom Progression) ---------------- */
     else if (commandName === "stats") {
-      await interaction.deferReply();
-
       const targetUser = options.getUser("user") || user;
       const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
       const p = player(targetUser.id);
       const reg = getRegistry(targetUser.id);
 
-      try {
-        const imageBuffer = await generateStatsCardImage(targetUser, targetMember, p, reg);
-        const attachment = new AttachmentBuilder(imageBuffer, { name: "stats-card.png" });
+      const displayName = targetMember?.displayName || targetUser.username;
+      const robloxTag = reg ? `@${reg.roblox_username}` : "@Unregistered";
 
-        const embed = new EmbedBuilder()
-          .setTitle("📊  |    Statistics")
-          .setColor(0x0b0b0b)
-          .setImage("attachment://stats-card.png");
+      // Import getRxpDisplay to show e.g. "200/350"
+      const currentRank = p.rank || "Amateur";
+      const rxpString = getRxpDisplay(currentRank, p.rxp || 200);
 
-        await interaction.editReply({ embeds: [embed], files: [attachment] });
-      } catch (err) {
-        console.error("Failed to render stats card image:", err);
-        await interaction.editReply("❌ An error occurred while generating your stats card image.");
-      }
+      const embed = new EmbedBuilder()
+        .setTitle("📊  |    Player Statistics")
+        .setColor(0x0b0b0b)
+        .setThumbnail(targetUser.displayAvatarURL({ extension: "png", size: 256 }))
+        .addFields(
+          { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
+          { name: "Rank", value: `${currentRank}`, inline: true },
+          { name: "Rating", value: `${p.rating ?? "6.0"}`, inline: true },
+          { name: "RXP Progress", value: `${rxpString}`, inline: true },
+          { name: "K / D / A", value: `${p.kills} / ${p.deaths} / ${p.assists}`, inline: true },
+          { name: "W / L", value: `${p.wins} / ${p.losses}`, inline: true }
+        );
+
+      await interaction.reply({ embeds: [embed] });
     }
 
     /* ---------------- /rm ---------------- */
