@@ -5,6 +5,18 @@ const db = new Database("bot.db");
 
 // Initialize tables
 db.exec(`
+CREATE TABLE IF NOT EXISTS players (
+    user_id TEXT PRIMARY KEY,
+    rank TEXT DEFAULT 'Unranked',
+    rating REAL DEFAULT NULL,
+    rxp INTEGER DEFAULT 0,
+    kills INTEGER DEFAULT 0,
+    deaths INTEGER DEFAULT 0,
+    assists INTEGER DEFAULT 0,
+    wins INTEGER DEFAULT 0,
+    losses INTEGER DEFAULT 0
+  );
+  
   CREATE TABLE IF NOT EXISTS players (
     user_id TEXT PRIMARY KEY,
     rank TEXT DEFAULT 'Amateur',
@@ -79,7 +91,7 @@ export function patch(userId, fields) {
 
 export function reset(userId) {
   db.prepare(`
-    UPDATE players SET rank = 'Amateur', rating = 6.0, rxp = 200, kills = 0, deaths = 0, assists = 0, wins = 0, losses = 0 
+    UPDATE players SET rank = 'Unranked', rating = NULL, rxp = 0, kills = 0, deaths = 0, assists = 0, wins = 0, losses = 0 
     WHERE user_id = ?
   `).run(userId);
 }
