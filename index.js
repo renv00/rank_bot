@@ -247,6 +247,17 @@ client.on("interactionCreate", async (interaction) => {
 
   const { commandName, options, user } = interaction;
 
+  // 🛡️ RESTRICTION: Unregistered users can only use /register, /stats, and /lb
+  const allowedWithoutRegistration = ["register", "stats", "lb"];
+  const registryCheck = getRegistry(user.id);
+
+  if (!registryCheck && !allowedWithoutRegistration.includes(commandName)) {
+    return interaction.reply({
+      content: "❌ You must register your Roblox username first! Please run `/register <roblox_username>` before using this command.",
+      ephemeral: true,
+    });
+  }
+  
   try {
     /* ---------------- /register ---------------- */
     if (commandName === "register") {
@@ -542,8 +553,9 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       const displayName = targetMember?.displayName || targetUser.username;
       const robloxTag = reg ? `@${reg.roblox_username}` : "@Unregistered";
 
-      const currentRank = p.rank || "Amateur";
-      const rxpString = getRxpDisplay(currentRank, p.rxp || 200);
+      const currentRank = p.rank || "Unranked";
+      const ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
+      const rxpString = currentRank === "Unranked" ? `${p.rxp || 0} / 100` : getRxpDisplay(currentRank, p.rxp || 0);
 
       const embed = new EmbedBuilder()
         .setTitle("📊  |    Player Statistics")
@@ -552,7 +564,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         .addFields(
           { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
           { name: "Rank", value: `${currentRank}`, inline: true },
-          { name: "Rating", value: `${p.rating ?? "6.0"}`, inline: true },
+          { name: "Rating", value: `${ratingDisplay}`, inline: true },
           { name: "RXP Progress", value: `${rxpString}`, inline: true },
           { name: "K / D / A", value: `${p.kills} / ${p.deaths} / ${p.assists}`, inline: true },
           { name: "W / L", value: `${p.wins} / ${p.losses}`, inline: true }
