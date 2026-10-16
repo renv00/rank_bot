@@ -82,7 +82,9 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message],
 });
 
+// In-memory state tracking
 const activeLobbies = new Map();
+const hostCooldowns = new Map(); // Tracks host cooldown timestamps (10 mins)
 
 // ---------------- AUTOMATIC COMMAND REGISTRATION ----------------
 const ranks = ["Unranked", "Amateur", "Contender", "Comp", "Elite", "Supreme"];
@@ -218,41 +220,61 @@ client.once("ready", async () => {
 
 // ---------------- INTERACTION HANDLER ----------------
 client.on("interactionCreate", async (interaction) => {
+  /* ---------------- BUTTON JOIN HANDLER ---------------- */
   if (interaction.isButton()) {
     if (interaction.customId.startsWith("join_game_")) {
       const gameId = interaction.customId.replace("join_game_", "");
       const lobby = activeLobbies.get(gameId);
 
       if (!lobby) {
-        return interaction.reply({ content: "This game lobby no longer exists.", flags: MessageFlags.Ephemeral });
+        return interaction.reply({ content: "❌ This game lobby no longer exists or has expired.", flags: MessageFlags.Ephemeral });
       }
 
-      if (lobby.players.some((p) => p.id === interaction.user.id)) {
-        return interaction.reply({ content: "You are already in this game!", flags: MessageFlags.Ephemeral });
+      if (!lobby.requiredIds.includes(interaction.user.id)) {
+        return interaction.reply({
+          content: "❌ You are not tagged in this game's roster!",
+          flags: MessageFlags.Ephemeral,
+        });
       }
 
-      lobby.players.push({ id: interaction.user.id, username: interaction.user.username });
+      if (lobby.acceptedIds.has(interaction.user.id)) {
+        return interaction.reply({ content: " You have already accepted and joined this game lobby!", flags: MessageFlags.Ephemeral });
+      }
+
+      lobby.acceptedIds.add(interaction.user.id);
+
+      const allJoined = lobby.requiredIds.every((id) => lobby.acceptedIds.has(id));
+      if (allJoined) {
+        lobby.isReady = true;
+      }
+
+      const playerListDisplay = lobby.requiredIds
+        .map((id) => {
+          const joined = lobby.acceptedIds.has(id);
+          return `${joined ? "✅" : "⏳"} <@${id}> ${joined ? "*Joined*" : "*Waiting...*"}`;
+        })
+        .join("\n");
 
       const updatedEmbed = EmbedBuilder.from(interaction.message.embeds[0]).setDescription(
-        `----------------------------------------\n\nWaiting for players to join...\n\n**Team 1:** ${lobby.t1Pings}\n**Team 2:** ${lobby.t2Pings}\n\n**Players Joined (${lobby.players.length}/${lobby.maxPlayers}):**\n` +
-          lobby.players.map((p, i) => `${i + 1}. <@${p.id}>`).join("\n")
+        `----------------------------------------\n\n**Team 1:** ${lobby.t1Pings}\n**Team 2:** ${lobby.t2Pings}\n\n` +
+          `**Roster Acceptance Status (${lobby.acceptedIds.size}/${lobby.requiredIds.length}):**\n${playerListDisplay}\n\n` +
+          (allJoined
+            ? "🎮 **ALL PLAYERS HAVE JOINED!** You may now play the match. The host can submit the screenshot using `/submit` once finished."
+            : "⏳ Waiting for remaining players to click **Join Game** below...")
       );
-
-      const isFull = lobby.players.length >= lobby.maxPlayers;
 
       const updatedRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`join_game_${gameId}`)
-          .setLabel(isFull ? "Game Full" : "Join")
-          .setStyle(ButtonStyle.Success)
-          .setDisabled(isFull)
+          .setLabel(allJoined ? "All Joined" : "Join Game")
+          .setStyle(allJoined ? ButtonStyle.Secondary : ButtonStyle.Success)
+          .setDisabled(allJoined)
       );
 
       await interaction.update({ embeds: [updatedEmbed], components: [updatedRow] });
 
-      if (isFull) {
-        activeLobbies.delete(gameId);
-        await interaction.followUp({ content: `🎮 **Game #${gameId} is ready!** All players have joined.` });
+      if (allJoined) {
+        await interaction.followUp({ content: `🎮 **Game #${gameId} is Ready!** All tagged players have joined.` });
       }
     }
     return;
@@ -285,7 +307,7 @@ client.on("interactionCreate", async (interaction) => {
             name: "👤 Player Commands",
             value: 
               "`/register <username>` — Register your exact Roblox username to play.\n" +
-              "`/stats [user]` — View rank, rating, RXP progress, KDA, and W/L statistics.\n" +
+              "`/stats [user]` — View rank, rating, RXP progress, placement status, KDA, W/L, and Win Rate.\n" +
               "`/lb` — Display the top 10 ranked leaderboard.\n" +
               "`/rm [user]` — View a list of recent matches played by a user.",
             inline: false
@@ -293,7 +315,7 @@ client.on("interactionCreate", async (interaction) => {
           {
             name: "⚔️ Game & Matchmaking Commands",
             value: 
-              "`/startgame <team1> <team2>` — Tag Team 1 and Team 2 members (e.g., `@user1 @user2`) to create an active match session.\n" +
+              "`/startgame <team1> <team2>` — Tag Team 1 and Team 2 members to create an active match session (10m cooldown).\n" +
               "`/submit <screenshot>` — *(Host Only)* Upload your **Duel History** screenshot to verify and auto-award match results.\n" +
               "`/claim <username>` — Claim participation RXP if your team lost the recent match.",
             inline: false
@@ -349,6 +371,20 @@ client.on("interactionCreate", async (interaction) => {
 
     /* ---------------- /startgame ---------------- */
     else if (commandName === "startgame") {
+      // ⏱️ 10-MINUTE HOST COOLDOWN CHECK
+      const now = Date.now();
+      const COOLDOWN_DURATION = 10 * 60 * 1000;
+      const lastHostTime = hostCooldowns.get(user.id);
+
+      if (lastHostTime && now - lastHostTime < COOLDOWN_DURATION) {
+        const remainingSeconds = Math.ceil((COOLDOWN_DURATION - (now - lastHostTime)) / 1000);
+        const unixTimestamp = Math.floor((now + (COOLDOWN_DURATION - (now - lastHostTime))) / 1000);
+        return interaction.reply({
+          content: `⏳ **Host Cooldown Active:** You cannot start another game yet! Please wait <t:${unixTimestamp}:R> (${Math.ceil(remainingSeconds / 60)} mins remaining).`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
       await interaction.deferReply();
 
       const rawT1 = options.getString("team1", true);
@@ -396,17 +432,53 @@ client.on("interactionCreate", async (interaction) => {
       const game = createGame(user.id, gamePlayers);
       const gameId = game.id.toString();
 
+      // Record Cooldown
+      hostCooldowns.set(user.id, now);
+
       const t1Pings = t1Ids.map((id) => `<@${id}>`).join(", ");
       const t2Pings = t2Ids.map((id) => `<@${id}>`).join(", ");
+
+      const acceptedIds = new Set([user.id]); // Host auto-joins
+      const requiredIds = uniqueIds;
+      const isReady = acceptedIds.size >= requiredIds.length;
+
+      activeLobbies.set(gameId, {
+        gameId,
+        hostId: user.id,
+        requiredIds,
+        acceptedIds,
+        t1Pings,
+        t2Pings,
+        isReady,
+      });
+
+      const playerListDisplay = requiredIds
+        .map((id) => {
+          const joined = acceptedIds.has(id);
+          return `${joined ? "✅" : "⏳"} <@${id}> ${joined ? "*Joined (Host)*" : "*Waiting...*"}`;
+        })
+        .join("\n");
 
       const embed = new EmbedBuilder()
         .setTitle(`⚔️ Active Ranked Game #${gameId}`)
         .setColor(0x2b2d31)
         .setDescription(
-          `----------------------------------------\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n📌 **Host (@${getRegistry(user.id).roblox_username}):** Play your match, take a screenshot of the **Duel History**, and run \`/submit\` to record the results.`
+          `----------------------------------------\n\n**Team 1:** ${t1Pings}\n**Team 2:** ${t2Pings}\n\n` +
+            `**Roster Acceptance Status (${acceptedIds.size}/${requiredIds.length}):**\n${playerListDisplay}\n\n` +
+            (isReady
+              ? "🎮 **ALL PLAYERS HAVE JOINED!** You may now play the match. The host can submit the screenshot using `/submit` once finished."
+              : "⏳ All tagged players must click **Join Game** below before starting!")
         );
 
-      await interaction.editReply({ embeds: [embed] });
+      const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`join_game_${gameId}`)
+          .setLabel(isReady ? "All Joined" : "Join Game")
+          .setStyle(isReady ? ButtonStyle.Secondary : ButtonStyle.Success)
+          .setDisabled(isReady)
+      );
+
+      await interaction.editReply({ embeds: [embed], components: [row] });
     }
 
     /* ---------------- /submit HANDLER ---------------- */
@@ -433,6 +505,20 @@ client.on("interactionCreate", async (interaction) => {
         );
       }
 
+      const gameId = activeGame.id.toString();
+      const lobby = activeLobbies.get(gameId);
+
+      if (lobby && !lobby.isReady) {
+        const remainingPings = lobby.requiredIds
+          .filter((id) => !lobby.acceptedIds.has(id))
+          .map((id) => `<@${id}>`)
+          .join(", ");
+
+        return interaction.editReply(
+          `❌ **Cannot Submit Match:** All tagged players must join the game lobby first!\n⏳ Still waiting on: ${remainingPings}`
+        );
+      }
+
       const attachment = options.getAttachment("screenshot", true);
 
       let imageBuffer;
@@ -456,11 +542,8 @@ client.on("interactionCreate", async (interaction) => {
         const base64Image = imageBuffer.toString("base64");
         const mimeType = attachment.contentType || "image/png";
 
-        // Primary strategy: router endpoint; fallback: specific free model
-        const modelToUse = "openrouter/free";
-
         const response = await openai.chat.completions.create({
-          model: modelToUse,
+          model: "openrouter/free",
           messages: [
             {
               role: "user",
@@ -506,63 +589,103 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
 
       recordImageHash(imageBuffer, user.id, activeGame.id);
       completeGame(activeGame.id, user.id, attachment.url);
+      activeLobbies.delete(gameId);
 
       const hostWon = analysis.hostWon;
       const hostTeam = activeGame.players.find((p) => (p.user_id || p.userId) === user.id)?.team || 1;
       const winners = activeGame.players.filter((p) => p.team === (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
       const losers = activeGame.players.filter((p) => p.team !== (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
 
+      // 🏆 Process Winners Stats & Placements
       for (const w of winners) {
         const targetId = w.user_id || w.userId;
         const p = ensure(targetId);
         const matchCount = getPlayerMatchCount(targetId);
 
         if (matchCount < 5) {
-          match(targetId, 5, hostWon ? 0 : 2, 5, 2, 2, 25);
-          
+          match(targetId, 5, 0, 5, 2, 2, 25); // Record match entry
           const updatedMatchesCount = getPlayerMatchCount(targetId);
           if (updatedMatchesCount === 5) {
             const userMatches = placements(targetId);
-            const formattedMatches = userMatches.map(m => ({ scoreFor: m.score_for, scoreAgainst: m.score_against }));
+            const formattedMatches = userMatches.map((m) => ({ scoreFor: m.score_for, scoreAgainst: m.score_against }));
             const placementResult = placementRank(formattedMatches);
 
             if (placementResult) {
               const [assignedRank, assignedRating] = placementResult;
               const startingRxp = assignedRank === "Contender" ? 400 : 200;
-              patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, wins: p.wins + 1 });
+              patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, wins: (p.wins || 0) + 1 });
             } else {
-              patch(targetId, { rank: "Amateur", rating: 6.0, rxp: 200, wins: p.wins + 1 });
+              patch(targetId, { rank: "Amateur", rating: 6.0, rxp: 200, wins: (p.wins || 0) + 1 });
             }
           } else {
-            patch(targetId, { wins: p.wins + 1 });
+            patch(targetId, { wins: (p.wins || 0) + 1 });
           }
         } else {
           const earnedRxp = rxp({ sf: 5, sa: 0, k: 5, d: 2, a: 2, place: 1 });
           const updatedData = checkRankProgression({
             rank: p.rank || "Amateur",
             rxp: (p.rxp || 200) + earnedRxp,
-            rating: p.rating || 6.0
+            rating: p.rating || 6.0,
           });
 
-          patch(targetId, { 
-            rxp: updatedData.rxp, 
-            rank: updatedData.rank, 
-            rating: updatedData.rating, 
-            wins: p.wins + 1 
+          patch(targetId, {
+            rxp: updatedData.rxp,
+            rank: updatedData.rank,
+            rating: updatedData.rating,
+            wins: (p.wins || 0) + 1,
           });
         }
       }
 
-      if (!hostWon) {
-        setPendingClaim(activeGame.id, losers);
-        const loserPings = losers.map((l) => `<@${l.user_id || l.userId}>`).join(", ");
-        return interaction.editReply(
-          ` Match result recorded!\n🏆 **Winning Team verified.**\n📢 ${loserPings}: Your team lost. Run \`/claim "roblox_username"\` to claim participation RXP!`
-        );
+      // 💀 Process Losers Stats (-20 RXP & Add Loss)
+      for (const l of losers) {
+        const targetId = l.user_id || l.userId;
+        const p = ensure(targetId);
+        const matchCount = getPlayerMatchCount(targetId);
+
+        if (matchCount < 5) {
+          match(targetId, 0, 5, 2, 5, 2, 0); // Record match entry
+          const updatedMatchesCount = getPlayerMatchCount(targetId);
+          if (updatedMatchesCount === 5) {
+            const userMatches = placements(targetId);
+            const formattedMatches = userMatches.map((m) => ({ scoreFor: m.score_for, scoreAgainst: m.score_against }));
+            const placementResult = placementRank(formattedMatches);
+
+            if (placementResult) {
+              const [assignedRank, assignedRating] = placementResult;
+              const startingRxp = assignedRank === "Contender" ? 400 : 200;
+              patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, losses: (p.losses || 0) + 1 });
+            } else {
+              patch(targetId, { rank: "Amateur", rating: 6.0, rxp: 200, losses: (p.losses || 0) + 1 });
+            }
+          } else {
+            patch(targetId, { losses: (p.losses || 0) + 1 });
+          }
+        } else {
+          // -20 RXP Deduction for Loss
+          const newRxp = Math.max(0, (p.rxp || 200) - 20);
+          const updatedData = checkRankProgression({
+            rank: p.rank || "Amateur",
+            rxp: newRxp,
+            rating: p.rating || 6.0,
+          });
+
+          patch(targetId, {
+            rxp: updatedData.rxp,
+            rank: updatedData.rank,
+            rating: updatedData.rating,
+            losses: (p.losses || 0) + 1,
+          });
+        }
       }
 
+      const winnerPings = winners.map((w) => `<@${w.user_id || w.userId}>`).join(", ");
+      const loserPings = losers.map((l) => `<@${l.user_id || l.userId}>`).join(", ");
+
       return interaction.editReply(
-        ` Match result recorded!\n🏆 **VICTORY verified for host @${reg.roblox_username}!** Roster rewards processed successfully.`
+        `🏆 **Match Results Verified & Recorded!**\n\n` +
+          `🥇 **Winners (${winnerPings}):** +Wins & RXP Awarded!\n` +
+          `💀 **Losers (${loserPings}):** +1 Loss & -20 RXP Deducted.`
       );
     }
 
@@ -579,7 +702,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       }
 
       const p = ensure(user.id);
-      patch(user.id, { rxp: p.rxp + 15, losses: p.losses + 1 });
+      patch(user.id, { rxp: p.rxp + 15, losses: (p.losses || 0) + 1 });
 
       return interaction.reply({
         content: `✅ Claim successful! Added +15 RXP and recorded match participation for **${username}**.`,
@@ -594,25 +717,41 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       try {
         const targetUser = options.getUser("user") || user;
         const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
-        
+
         const displayName = targetMember?.displayName || targetUser.username;
         const reg = getRegistry(targetUser.id);
 
         let rankDisplay = "Unranked";
         let ratingDisplay = "N/A";
-        let rxpDisplay = "N/A";
+        let rxpDisplay = "Placement Matches 0/5";
         let kdaDisplay = "N/A";
-        let wlDisplay = "N/A";
+        let wlDisplay = "0 / 0 (Win Rate: 0%)";
         let robloxTag = "@Unregistered";
 
         if (reg) {
           robloxTag = `@${reg.roblox_username}`;
           const p = player(targetUser.id);
+          const matchCount = getPlayerMatchCount(targetUser.id);
+
           rankDisplay = p.rank || "Unranked";
           ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
-          rxpDisplay = rankDisplay === "Unranked" ? `${p.rxp || 0} / 100` : getRxpDisplay(rankDisplay, p.rxp || 0);
+
+          // Unranked/Placement Matches tracking
+          if (rankDisplay === "Unranked" || matchCount < 5) {
+            rxpDisplay = `Placement Matches ${matchCount}/5`;
+          } else {
+            rxpDisplay = getRxpDisplay(rankDisplay, p.rxp || 0);
+          }
+
           kdaDisplay = `${p.kills || 0} / ${p.deaths || 0} / ${p.assists || 0}`;
-          wlDisplay = `${p.wins || 0} / ${p.losses || 0}`;
+
+          // W/L & Dynamic Win Rate Calculation
+          const totalWins = p.wins || 0;
+          const totalLosses = p.losses || 0;
+          const totalGames = totalWins + totalLosses;
+          const winRate = totalGames > 0 ? Math.round((totalWins / totalGames) * 100) : 0;
+
+          wlDisplay = `${totalWins} / ${totalLosses} (Win Rate: ${winRate}%)`;
         }
 
         const embed = new EmbedBuilder()
@@ -623,7 +762,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
             { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
             { name: "Rank", value: `${rankDisplay}`, inline: true },
             { name: "Rating", value: `${ratingDisplay}`, inline: true },
-            { name: "RXP Progress", value: `${rxpDisplay}`, inline: true },
+            { name: "RXP / Placements", value: `${rxpDisplay}`, inline: true },
             { name: "K / D / A", value: `${kdaDisplay}`, inline: true },
             { name: "W / L", value: `${wlDisplay}`, inline: true }
           );
