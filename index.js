@@ -268,7 +268,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.update({ embeds: [updatedEmbed], components: [updatedRow] });
 
       if (allJoined) {
-        await interaction.followUp({ content: `🎮 **Game #${gameId} is Ready!** All tagged players have joined.` });
+        await interaction.followUp({ content: `🎮 **Game #${gameId} is Ready!** All players have joined.` });
       }
     }
     return;
@@ -376,7 +376,7 @@ client.on("interactionCreate", async (interaction) => {
         const remainingSeconds = Math.ceil((COOLDOWN_DURATION - (now - lastHostTime)) / 1000);
         const unixTimestamp = Math.floor((now + (COOLDOWN_DURATION - (now - lastHostTime))) / 1000);
         return interaction.reply({
-          content: `⏳ **Host Cooldown Active:** You cannot start another game yet! Please wait <t:${unixTimestamp}:R> (${Math.ceil(remainingSeconds / 60)} mins remaining).`,
+          content: `⏳ **Cooldown :** You cannot start another game yet! Please wait <t:${unixTimestamp}:R> (${Math.ceil(remainingSeconds / 60)} mins remaining).`,
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -476,7 +476,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [row] });
     }
 
-    /* ---------------- /submit HANDLER ---------------- */
+/* ---------------- /submit HANDLER ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -541,6 +541,10 @@ client.on("interactionCreate", async (interaction) => {
           model: "openrouter/free",
           messages: [
             {
+              role: "system",
+              content: "You are a precise vision parser. You MUST respond strictly in valid JSON format. Do not include extra text, status messages, or markdown wrappers.",
+            },
+            {
               role: "user",
               content: [
                 {
@@ -551,7 +555,7 @@ client.on("interactionCreate", async (interaction) => {
 3. Are all these lobby participants (${expectedUsernames}) present on the scoreboard?
 4. Did the host '${reg.roblox_username}' WIN this match?
 
-Respond ONLY with raw valid JSON, no markdown codeblock formatting:
+Respond ONLY with raw JSON matching this format:
 {"isDuelHistory": boolean, "usernameFound": boolean, "allPlayersVerified": boolean, "hostWon": boolean}`,
                 },
                 {
@@ -564,16 +568,26 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         });
 
         let rawText = response.choices[0]?.message?.content?.trim() || "";
+
+        // Strip markdown blocks if present
         if (rawText.startsWith("```json")) {
           rawText = rawText.replace(/^```json/, "").replace(/```$/, "").trim();
         } else if (rawText.startsWith("```")) {
           rawText = rawText.replace(/^```/, "").replace(/```\$/, "").trim();
         }
 
+        // 🛡️ Robust Extraction: Extract the JSON object substring between `{` and `}`
+        const firstBrace = rawText.indexOf("{");
+        const lastBrace = rawText.lastIndexOf("}");
+
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          rawText = rawText.substring(firstBrace, lastBrace + 1);
+        }
+
         analysis = JSON.parse(rawText);
       } catch (err) {
-        console.error("OpenRouter API Error:", err);
-        return interaction.editReply(`❌ Failed to analyze screenshot with AI Vision: ${err.message}`);
+        console.error("OpenRouter Vision Parsing Error:", err);
+        return interaction.editReply(`❌ **AI Vision Error:** The model returned invalid response format. Please try re-submitting the screenshot.`);
       }
 
       if (!analysis.isDuelHistory || !analysis.usernameFound || !analysis.allPlayersVerified) {
@@ -596,13 +610,11 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         const targetId = w.user_id || w.userId;
         const p = ensure(targetId);
         
-        // Record match entry in db
         match(targetId, 5, 0, 5, 2, 2, 25);
         const matchCount = getPlayerMatchCount(targetId);
 
         if (matchCount >= 5) {
           if (p.rank === "Unranked" || !p.rank) {
-            // Assign rank upon completing 5th placement
             const userMatches = placements(targetId);
             const formattedMatches = userMatches.map((m) => ({ scoreFor: m.score_for, scoreAgainst: m.score_against }));
             const placementResult = placementRank(formattedMatches);
@@ -611,7 +623,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
             const startingRxp = assignedRank === "Contender" ? 400 : 200;
             patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, wins: (p.wins || 0) + 1 });
           } else {
-            // Normal post-placement win progression
             const earnedRxp = rxp({ sf: 5, sa: 0, k: 5, d: 2, a: 2, place: 1 });
             const updatedData = checkRankProgression({
               rank: p.rank,
@@ -627,7 +638,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
             });
           }
         } else {
-          // Under 5 placement games -> Keep Unranked
           patch(targetId, { rank: "Unranked", rating: null, wins: (p.wins || 0) + 1 });
         }
       }
@@ -637,13 +647,11 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         const targetId = l.user_id || l.userId;
         const p = ensure(targetId);
         
-        // Record match entry in db
         match(targetId, 0, 5, 2, 5, 2, 0);
         const matchCount = getPlayerMatchCount(targetId);
 
         if (matchCount >= 5) {
           if (p.rank === "Unranked" || !p.rank) {
-            // Assign rank upon completing 5th placement
             const userMatches = placements(targetId);
             const formattedMatches = userMatches.map((m) => ({ scoreFor: m.score_for, scoreAgainst: m.score_against }));
             const placementResult = placementRank(formattedMatches);
@@ -652,7 +660,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
             const startingRxp = assignedRank === "Contender" ? 400 : 200;
             patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, losses: (p.losses || 0) + 1 });
           } else {
-            // Normal post-placement loss progression (-20 RXP)
             const newRxp = Math.max(0, (p.rxp || 200) - 20);
             const updatedData = checkRankProgression({
               rank: p.rank,
@@ -668,7 +675,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
             });
           }
         } else {
-          // Under 5 placement games -> Keep Unranked
           patch(targetId, { rank: "Unranked", rating: null, losses: (p.losses || 0) + 1 });
         }
       }
@@ -678,8 +684,8 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
 
       return interaction.editReply(
         `🏆 **Match Results Verified & Recorded!**\n\n` +
-          `🥇 **Winners (${winnerPings}):** +Wins Awarded!\n` +
-          `💀 **Losers (${loserPings}):** +1 Loss Recorded.`
+          `🥇 **Winners (${winnerPings}):**Win Awarded!\n` +
+          `💀 **Losers (${loserPings}):**Loss Recorded.`
       );
     }
 
