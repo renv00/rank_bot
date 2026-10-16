@@ -279,7 +279,7 @@ client.on("interactionCreate", async (interaction) => {
   const { commandName, options, user } = interaction;
 
   try {
-    /* ---------------- /help (Guaranteed immediate reply) ---------------- */
+    /* ---------------- /help ---------------- */
     if (commandName === "help") {
       const embed = new EmbedBuilder()
         .setTitle("📖  |    Ranked Bot Command Guide")
@@ -321,7 +321,7 @@ client.on("interactionCreate", async (interaction) => {
       return await interaction.reply({ embeds: [embed] });
     }
 
-    // 🛡️ RESTRICTION CHECK: Require registration for all other restricted commands
+    // 🛡️ RESTRICTION CHECK
     const allowedWithoutRegistration = ["register", "stats", "lb", "help"];
     const registryCheck = getRegistry(user.id);
 
@@ -345,7 +345,10 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       setRegistry(user.id, username);
-      ensure(user.id);
+      const p = ensure(user.id);
+      
+      // Enforce unranked defaults upon initial registration
+      patch(user.id, { rank: "Unranked", rating: null });
 
       return interaction.reply({
         content: `✅ Successfully registered your Roblox username as **${username}**!`,
@@ -365,7 +368,6 @@ client.on("interactionCreate", async (interaction) => {
 
     /* ---------------- /startgame ---------------- */
     else if (commandName === "startgame") {
-      // ⏱️ 10-MINUTE HOST COOLDOWN CHECK
       const now = Date.now();
       const COOLDOWN_DURATION = 10 * 60 * 1000;
       const lastHostTime = hostCooldowns.get(user.id);
@@ -426,13 +428,12 @@ client.on("interactionCreate", async (interaction) => {
       const game = createGame(user.id, gamePlayers);
       const gameId = game.id.toString();
 
-      // Record Cooldown
       hostCooldowns.set(user.id, now);
 
       const t1Pings = t1Ids.map((id) => `<@${id}>`).join(", ");
       const t2Pings = t2Ids.map((id) => `<@${id}>`).join(", ");
 
-      const acceptedIds = new Set([user.id]); // Host auto-joins
+      const acceptedIds = new Set([user.id]);
       const requiredIds = uniqueIds;
       const isReady = acceptedIds.size >= requiredIds.length;
 
@@ -594,40 +595,40 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       for (const w of winners) {
         const targetId = w.user_id || w.userId;
         const p = ensure(targetId);
+        
+        // Record match entry in db
+        match(targetId, 5, 0, 5, 2, 2, 25);
         const matchCount = getPlayerMatchCount(targetId);
 
-        if (matchCount < 5) {
-          match(targetId, 5, 0, 5, 2, 2, 25);
-          const updatedMatchesCount = getPlayerMatchCount(targetId);
-          if (updatedMatchesCount === 5) {
+        if (matchCount >= 5) {
+          if (p.rank === "Unranked" || !p.rank) {
+            // Assign rank upon completing 5th placement
             const userMatches = placements(targetId);
             const formattedMatches = userMatches.map((m) => ({ scoreFor: m.score_for, scoreAgainst: m.score_against }));
             const placementResult = placementRank(formattedMatches);
 
-            if (placementResult) {
-              const [assignedRank, assignedRating] = placementResult;
-              const startingRxp = assignedRank === "Contender" ? 400 : 200;
-              patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, wins: (p.wins || 0) + 1 });
-            } else {
-              patch(targetId, { rank: "Amateur", rating: 6.0, rxp: 200, wins: (p.wins || 0) + 1 });
-            }
+            const [assignedRank, assignedRating] = placementResult || ["Amateur", 6.0];
+            const startingRxp = assignedRank === "Contender" ? 400 : 200;
+            patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, wins: (p.wins || 0) + 1 });
           } else {
-            patch(targetId, { wins: (p.wins || 0) + 1 });
+            // Normal post-placement win progression
+            const earnedRxp = rxp({ sf: 5, sa: 0, k: 5, d: 2, a: 2, place: 1 });
+            const updatedData = checkRankProgression({
+              rank: p.rank,
+              rxp: (p.rxp || 200) + earnedRxp,
+              rating: p.rating || 6.0,
+            });
+
+            patch(targetId, {
+              rxp: updatedData.rxp,
+              rank: updatedData.rank,
+              rating: updatedData.rating,
+              wins: (p.wins || 0) + 1,
+            });
           }
         } else {
-          const earnedRxp = rxp({ sf: 5, sa: 0, k: 5, d: 2, a: 2, place: 1 });
-          const updatedData = checkRankProgression({
-            rank: p.rank || "Amateur",
-            rxp: (p.rxp || 200) + earnedRxp,
-            rating: p.rating || 6.0,
-          });
-
-          patch(targetId, {
-            rxp: updatedData.rxp,
-            rank: updatedData.rank,
-            rating: updatedData.rating,
-            wins: (p.wins || 0) + 1,
-          });
+          // Under 5 placement games -> Keep Unranked
+          patch(targetId, { rank: "Unranked", rating: null, wins: (p.wins || 0) + 1 });
         }
       }
 
@@ -635,40 +636,40 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       for (const l of losers) {
         const targetId = l.user_id || l.userId;
         const p = ensure(targetId);
+        
+        // Record match entry in db
+        match(targetId, 0, 5, 2, 5, 2, 0);
         const matchCount = getPlayerMatchCount(targetId);
 
-        if (matchCount < 5) {
-          match(targetId, 0, 5, 2, 5, 2, 0);
-          const updatedMatchesCount = getPlayerMatchCount(targetId);
-          if (updatedMatchesCount === 5) {
+        if (matchCount >= 5) {
+          if (p.rank === "Unranked" || !p.rank) {
+            // Assign rank upon completing 5th placement
             const userMatches = placements(targetId);
             const formattedMatches = userMatches.map((m) => ({ scoreFor: m.score_for, scoreAgainst: m.score_against }));
             const placementResult = placementRank(formattedMatches);
 
-            if (placementResult) {
-              const [assignedRank, assignedRating] = placementResult;
-              const startingRxp = assignedRank === "Contender" ? 400 : 200;
-              patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, losses: (p.losses || 0) + 1 });
-            } else {
-              patch(targetId, { rank: "Amateur", rating: 6.0, rxp: 200, losses: (p.losses || 0) + 1 });
-            }
+            const [assignedRank, assignedRating] = placementResult || ["Amateur", 6.0];
+            const startingRxp = assignedRank === "Contender" ? 400 : 200;
+            patch(targetId, { rank: assignedRank, rating: assignedRating, rxp: startingRxp, losses: (p.losses || 0) + 1 });
           } else {
-            patch(targetId, { losses: (p.losses || 0) + 1 });
+            // Normal post-placement loss progression (-20 RXP)
+            const newRxp = Math.max(0, (p.rxp || 200) - 20);
+            const updatedData = checkRankProgression({
+              rank: p.rank,
+              rxp: newRxp,
+              rating: p.rating || 6.0,
+            });
+
+            patch(targetId, {
+              rxp: updatedData.rxp,
+              rank: updatedData.rank,
+              rating: updatedData.rating,
+              losses: (p.losses || 0) + 1,
+            });
           }
         } else {
-          const newRxp = Math.max(0, (p.rxp || 200) - 20);
-          const updatedData = checkRankProgression({
-            rank: p.rank || "Amateur",
-            rxp: newRxp,
-            rating: p.rating || 6.0,
-          });
-
-          patch(targetId, {
-            rxp: updatedData.rxp,
-            rank: updatedData.rank,
-            rating: updatedData.rating,
-            losses: (p.losses || 0) + 1,
-          });
+          // Under 5 placement games -> Keep Unranked
+          patch(targetId, { rank: "Unranked", rating: null, losses: (p.losses || 0) + 1 });
         }
       }
 
@@ -677,8 +678,8 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
 
       return interaction.editReply(
         `🏆 **Match Results Verified & Recorded!**\n\n` +
-          `🥇 **Winners (${winnerPings}):** +Wins & RXP Awarded!\n` +
-          `💀 **Losers (${loserPings}):** +1 Loss & -20 RXP Deducted.`
+          `🥇 **Winners (${winnerPings}):** +Wins Awarded!\n` +
+          `💀 **Losers (${loserPings}):** +1 Loss Recorded.`
       );
     }
 
@@ -716,6 +717,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
 
         let rankDisplay = "Unranked";
         let ratingDisplay = "N/A";
+        let rxpHeader = "Placements";
         let rxpDisplay = "Placement Matches 0/5";
         let kdaDisplay = "N/A";
         let wlDisplay = "0 / 0 (Win Rate: 0%)";
@@ -726,13 +728,17 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
           const p = player(targetUser.id);
           const matchCount = getPlayerMatchCount(targetUser.id);
 
-          rankDisplay = p.rank || "Unranked";
-          ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
+          const isPlaced = matchCount >= 5 && p.rank && p.rank !== "Unranked";
 
-          if (rankDisplay === "Unranked" || matchCount < 5) {
-            rxpDisplay = `Placement Matches ${matchCount}/5`;
-          } else {
+          rankDisplay = isPlaced ? p.rank : "Unranked";
+          ratingDisplay = isPlaced && p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
+
+          if (isPlaced) {
+            rxpHeader = "RXP Progress";
             rxpDisplay = getRxpDisplay(rankDisplay, p.rxp || 0);
+          } else {
+            rxpHeader = "Placements";
+            rxpDisplay = `Placement Matches ${matchCount}/5`;
           }
 
           kdaDisplay = `${p.kills || 0} / ${p.deaths || 0} / ${p.assists || 0}`;
@@ -753,7 +759,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
             { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
             { name: "Rank", value: `${rankDisplay}`, inline: true },
             { name: "Rating", value: `${ratingDisplay}`, inline: true },
-            { name: "RXP / Placements", value: `${rxpDisplay}`, inline: true },
+            { name: rxpHeader, value: `${rxpDisplay}`, inline: true },
             { name: "K / D / A", value: `${kdaDisplay}`, inline: true },
             { name: "W / L", value: `${wlDisplay}`, inline: true }
           );
