@@ -29,6 +29,7 @@ import {
   voidMatch,
   createGame,
   getGame,
+  getActiveGameForHost,
   activeGamesForPlayer,
   completeGame,
   getRegistry,
@@ -38,6 +39,7 @@ import {
   getPendingClaims,
   isImageHashUsed,
   recordImageHash,
+  getPlayerMatchCount,
 } from "./db.js";
 
 import { placementRank, rxp } from "./ranking.js";
@@ -85,6 +87,10 @@ const activeLobbies = new Map();
 const ranks = ["Unranked", "Amateur", "Contender", "Comp", "Elite", "Supreme"];
 
 const commandDefinitions = [
+  new SlashCommandBuilder()
+    .setName("help")
+    .setDescription("View a guide on how to use all available commands"),
+
   new SlashCommandBuilder()
     .setName("startgame")
     .setDescription("Start a ranked game")
@@ -247,8 +253,8 @@ client.on("interactionCreate", async (interaction) => {
 
   const { commandName, options, user } = interaction;
 
-  // 🛡️ RESTRICTION: Unregistered users can only use /register, /stats, and /lb
-  const allowedWithoutRegistration = ["register", "stats", "lb"];
+  // 🛡️ RESTRICTION: Unregistered users can only use /register, /stats, /lb, and /help
+  const allowedWithoutRegistration = ["register", "stats", "lb", "help"];
   const registryCheck = getRegistry(user.id);
 
   if (!registryCheck && !allowedWithoutRegistration.includes(commandName)) {
@@ -257,10 +263,52 @@ client.on("interactionCreate", async (interaction) => {
       ephemeral: true,
     });
   }
-  
+
   try {
+    /* ---------------- /help ---------------- */
+    if (commandName === "help") {
+      const embed = new EmbedBuilder()
+        .setTitle("📖  |    Ranked Bot Command Guide")
+        .setColor(0x0b0b0b)
+        .setDescription("Welcome to the Ranked Matchmaking Bot! Below is a complete list of commands and how to use them.")
+        .addFields(
+          {
+            name: "👤 Player Commands",
+            value: 
+              "`/register <username>` — Register your exact Roblox username to play.\n" +
+              "`/stats [user]` — View rank, rating, RXP progress, KDA, and W/L statistics.\n" +
+              "`/lb` — Display the top 10 ranked leaderboard.\n" +
+              "`/rm [user]` — View a list of recent matches played by a user.",
+            inline: false
+          },
+          {
+            name: "⚔️ Game & Matchmaking Commands",
+            value: 
+              "`/startgame <team1> <team2>` — Tag Team 1 and Team 2 members (e.g., `@user1 @user2`) to create an active match session.\n" +
+              "`/submit <screenshot>` — *(Host Only)* Upload your **Duel History** screenshot to verify and auto-award match results.\n" +
+              "`/claim <username>` — Claim participation RXP if your team lost the recent match.",
+            inline: false
+          },
+          {
+            name: "🛠️ Staff / Admin Commands",
+            value: 
+              "`/setrank <user> <rank>` — Override a player's current rank.\n" +
+              "`/setrating <user> <rating>` — Set a player's rating (6.0 - 9.5).\n" +
+              "`/giverxp <user> <amount>` — Grant bonus RXP to a player.\n" +
+              "`/removerxp <user> <amount>` — Deduct RXP from a player.\n" +
+              "`/reset-registry <user>` — Clear a user's registered Roblox account so they can re-register.\n" +
+              "`/reset <user>` — Reset all stats, rank, and match history for a user.\n" +
+              "`/voidmatch <match_id>` — Void a previously recorded match by ID.",
+            inline: false
+          }
+        )
+        .setFooter({ text: "Run /register <username> to start playing!" });
+
+      await interaction.reply({ embeds: [embed] });
+    }
+
     /* ---------------- /register ---------------- */
-    if (commandName === "register") {
+    else if (commandName === "register") {
       const username = options.getString("username", true).trim();
       const existing = getRegistry(user.id);
 
@@ -336,7 +384,6 @@ client.on("interactionCreate", async (interaction) => {
         gamePlayers.push({ userId: id, username: reg.roblox_username, team: 2 });
       }
 
-      // Create a locked active game session in DB
       const game = createGame(user.id, gamePlayers);
       const gameId = game.id.toString();
 
@@ -352,8 +399,8 @@ client.on("interactionCreate", async (interaction) => {
 
       await interaction.editReply({ embeds: [embed] });
     }
-      
-   /* ---------------- /submit HANDLER ---------------- */
+
+    /* ---------------- /submit HANDLER ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -370,7 +417,6 @@ client.on("interactionCreate", async (interaction) => {
         );
       }
 
-      // 🛡️ STRICT GAME BINDING: Check if this user has an active hosted game waiting for submission
       const activeGame = getActiveGameForHost(user.id);
       if (!activeGame) {
         return interaction.editReply(
@@ -380,7 +426,6 @@ client.on("interactionCreate", async (interaction) => {
 
       const attachment = options.getAttachment("screenshot", true);
 
-      // Download image binary data & verify SHA-256 hash (prevents reuse of old screenshots)
       let imageBuffer;
       try {
         const response = await fetch(attachment.url);
@@ -392,7 +437,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (isImageHashUsed(imageBuffer)) {
         return interaction.editReply(
-          "❌ **Duplicate Submission Detected:** This exact screenshot has already been submitted and processed!"
+          "❌ **Duplicate Submission Detected:** This exact screenshot image has already been submitted to the bot!"
         );
       }
 
@@ -447,7 +492,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         );
       }
 
-      // Record image hash so this screenshot can never be used again
       recordImageHash(imageBuffer, user.id, activeGame.id);
       completeGame(activeGame.id, user.id, attachment.url);
 
@@ -456,19 +500,16 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       const winners = activeGame.players.filter((p) => p.team === (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
       const losers = activeGame.players.filter((p) => p.team !== (hostWon ? hostTeam : hostTeam === 1 ? 2 : 1));
 
-      // Process rewards and placement matches for each winner
       for (const w of winners) {
         const targetId = w.user_id || w.userId;
         const p = ensure(targetId);
         const matchCount = getPlayerMatchCount(targetId);
 
         if (matchCount < 5) {
-          // Log placement match record (e.g. 5-0 score format for wins)
           match(targetId, 5, hostWon ? 0 : 2, 5, 2, 2, 25);
           
           const updatedMatchesCount = getPlayerMatchCount(targetId);
           if (updatedMatchesCount === 5) {
-            // Evaluate all 5 placement matches
             const userMatches = placements(targetId);
             const formattedMatches = userMatches.map(m => ({ scoreFor: m.score_for, scoreAgainst: m.score_against }));
             const placementResult = placementRank(formattedMatches);
@@ -484,7 +525,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
             patch(targetId, { wins: p.wins + 1 });
           }
         } else {
-          // Regular ranked match RXP distribution
           const earnedRxp = rxp({ sf: 5, sa: 0, k: 5, d: 2, a: 2, place: 1 });
           const updatedData = checkRankProgression({
             rank: p.rank || "Amateur",
@@ -512,6 +552,67 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       return interaction.editReply(
         ` Match result recorded!\n🏆 **VICTORY verified for host @${reg.roblox_username}!** Roster rewards processed successfully.`
       );
+    }
+
+    /* ---------------- /claim ---------------- */
+    else if (commandName === "claim") {
+      const username = options.getString("username", true).trim();
+      const reg = getRegistry(user.id);
+
+      if (!reg || reg.roblox_username.toLowerCase() !== username.toLowerCase()) {
+        return interaction.reply({
+          content: `❌ Username mismatch! Your registered username is **${reg?.roblox_username || "None"}**.`,
+          ephemeral: true,
+        });
+      }
+
+      const p = ensure(user.id);
+      patch(user.id, { rxp: p.rxp + 15, losses: p.losses + 1 });
+
+      return interaction.reply({
+        content: `✅ Claim successful! Added +15 RXP and recorded match participation for **${username}**.`,
+      });
+    }
+
+    /* ---------------- /stats ---------------- */
+    else if (commandName === "stats") {
+      const targetUser = options.getUser("user") || user;
+      const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
+      
+      const displayName = targetMember?.displayName || targetUser.username;
+      const reg = getRegistry(targetUser.id);
+
+      let rankDisplay = "Unranked";
+      let ratingDisplay = "N/A";
+      let rxpDisplay = "N/A";
+      let kdaDisplay = "N/A";
+      let wlDisplay = "N/A";
+      let robloxTag = "@Unregistered";
+
+      if (reg) {
+        robloxTag = `@${reg.roblox_username}`;
+        const p = player(targetUser.id);
+        rankDisplay = p.rank || "Unranked";
+        ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
+        rxpDisplay = rankDisplay === "Unranked" ? `${p.rxp || 0} / 100` : getRxpDisplay(rankDisplay, p.rxp || 0);
+        kdaDisplay = `${p.kills || 0} / ${p.deaths || 0} / ${p.assists || 0}`;
+        wlDisplay = `${p.wins || 0} / ${p.losses || 0}`;
+      }
+
+      const embed = new EmbedBuilder()
+        .setTitle("📊  |    Player Statistics")
+        .setColor(0x0b0b0b)
+        .setThumbnail(targetUser.displayAvatarURL({ extension: "png", size: 256 }))
+        .addFields(
+          { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
+          { name: "Rank", value: `${rankDisplay}`, inline: true },
+          { name: "Rating", value: `${ratingDisplay}`, inline: true },
+          { name: "RXP Progress", value: `${rxpDisplay}`, inline: true },
+          { name: "K / D / A", value: `${kdaDisplay}`, inline: true },
+          { name: "W / L", value: `${wlDisplay}`, inline: true }
+        );
+
+      await interaction.reply({ embeds: [embed] });
     }
 
     /* ---------------- /rm ---------------- */
