@@ -11,6 +11,7 @@ import {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
+  MessageFlags,
 } from "discord.js";
 import OpenAI from "openai";
 import crypto from "crypto";
@@ -223,11 +224,11 @@ client.on("interactionCreate", async (interaction) => {
       const lobby = activeLobbies.get(gameId);
 
       if (!lobby) {
-        return interaction.reply({ content: "This game lobby no longer exists.", ephemeral: true });
+        return interaction.reply({ content: "This game lobby no longer exists.", flags: MessageFlags.Ephemeral });
       }
 
       if (lobby.players.some((p) => p.id === interaction.user.id)) {
-        return interaction.reply({ content: "You are already in this game!", ephemeral: true });
+        return interaction.reply({ content: "You are already in this game!", flags: MessageFlags.Ephemeral });
       }
 
       lobby.players.push({ id: interaction.user.id, username: interaction.user.username });
@@ -261,14 +262,14 @@ client.on("interactionCreate", async (interaction) => {
 
   const { commandName, options, user } = interaction;
 
-  // 🛡️ RESTRICTION: Unregistered users can only use /register, /, /lb, and /help
+  // 🛡️ RESTRICTION: Unregistered users can only use /register, /stats, /lb, and /help
   const allowedWithoutRegistration = ["register", "stats", "lb", "help"];
   const registryCheck = getRegistry(user.id);
 
   if (!registryCheck && !allowedWithoutRegistration.includes(commandName)) {
     return interaction.reply({
       content: "❌ You must register your Roblox username first! Please run `/register <roblox_username>` before using this command.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
   }
 
@@ -323,7 +324,7 @@ client.on("interactionCreate", async (interaction) => {
       if (existing) {
         return interaction.reply({
           content: `❌ You are already registered as **${existing.roblox_username}**. Contact staff to reset your registry.`,
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -332,7 +333,7 @@ client.on("interactionCreate", async (interaction) => {
 
       return interaction.reply({
         content: `✅ Successfully registered your Roblox username as **${username}**!`,
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
@@ -456,7 +457,7 @@ client.on("interactionCreate", async (interaction) => {
         const mimeType = attachment.contentType || "image/png";
 
         const response = await openai.chat.completions.create({
-          model: "google/gemini-2.0-flash-lite-preview-02-05:free",
+          model: "google/gemini-2.0-flash-exp:free",
           messages: [
             {
               role: "user",
@@ -570,7 +571,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       if (!reg || reg.roblox_username.toLowerCase() !== username.toLowerCase()) {
         return interaction.reply({
           content: `❌ Username mismatch! Your registered username is **${reg?.roblox_username || "None"}**.`,
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         });
       }
 
@@ -579,12 +580,12 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
 
       return interaction.reply({
         content: `✅ Claim successful! Added +15 RXP and recorded match participation for **${username}**.`,
+        flags: MessageFlags.Ephemeral,
       });
     }
 
-/* ---------------- /stats ---------------- */
+    /* ---------------- /stats ---------------- */
     else if (commandName === "stats") {
-      // Defer reply immediately so Discord doesn't time out
       await interaction.deferReply();
 
       try {
@@ -637,7 +638,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       const matches = recent(targetUser.id);
 
       if (!matches.length) {
-        return interaction.reply({ content: `No recent matches found for ${targetUser.username}.`, ephemeral: true });
+        return interaction.reply({ content: `No recent matches found for ${targetUser.username}.`, flags: MessageFlags.Ephemeral });
       }
 
       const list = matches
@@ -651,7 +652,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
     else if (commandName === "lb") {
       const top = leaderboard();
       if (!top.length) {
-        return interaction.reply({ content: "The leaderboard is currently empty.", ephemeral: true });
+        return interaction.reply({ content: "The leaderboard is currently empty.", flags: MessageFlags.Ephemeral });
       }
 
       const list = top
@@ -721,7 +722,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       const res = voidMatch(matchId);
 
       if (!res) {
-        return interaction.reply({ content: `Match ID **#${matchId}** was not found or is already voided.`, ephemeral: true });
+        return interaction.reply({ content: `Match ID **#${matchId}** was not found or is already voided.`, flags: MessageFlags.Ephemeral });
       }
 
       await interaction.reply({ content: `Successfully voided Match **#${matchId}**.` });
@@ -730,9 +731,9 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
     console.error("Error executing command:", error);
 
     if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({ content: "There was an error executing this command!", ephemeral: true });
+      await interaction.followUp({ content: "There was an error executing this command!", flags: MessageFlags.Ephemeral });
     } else {
-      await interaction.reply({ content: "There was an error executing this command!", ephemeral: true });
+      await interaction.reply({ content: "There was an error executing this command!", flags: MessageFlags.Ephemeral });
     }
   }
 });
