@@ -14,30 +14,23 @@ import {
   MessageFlags,
 } from "discord.js";
 import OpenAI from "openai";
-import crypto from "crypto";
 
 import {
   player,
   ensure,
   placements,
-  placementAdd,
   match,
   patch,
   reset as resetDb,
   recent,
   leaderboard,
-  getMatch,
   voidMatch,
   createGame,
-  getGame,
   getActiveGameForHost,
-  activeGamesForPlayer,
   completeGame,
   getRegistry,
   setRegistry,
   resetRegistry,
-  setPendingClaim,
-  getPendingClaims,
   isImageHashUsed,
   recordImageHash,
   getPlayerMatchCount,
@@ -268,7 +261,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.update({ embeds: [updatedEmbed], components: [updatedRow] });
 
       if (allJoined) {
-        await interaction.followUp({ content: `🎮 **Game #${gameId} is Ready!** All players have joined.` });
+        await interaction.followUp({ content: `🎮 **Game #${gameId} is Ready!** All tagged players have joined.` });
       }
     }
     return;
@@ -290,7 +283,7 @@ client.on("interactionCreate", async (interaction) => {
             name: "👤 Player Commands",
             value: 
               "`/register <username>` — Register your exact Roblox username to play.\n" +
-              "`/stats [user]` — View rank, rating, RXP progress, placement status, KDA, W/L, and Win Rate.\n" +
+              "`/stats [user]` — View rank, rating, RXP progress, placement status, W/L, and Win Rate.\n" +
               "`/lb` — Display the top 10 ranked leaderboard.\n" +
               "`/rm [user]` — View a list of recent matches played by a user.",
             inline: false
@@ -345,7 +338,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       setRegistry(user.id, username);
-      const p = ensure(user.id);
+      ensure(user.id);
       
       // Enforce unranked defaults upon initial registration
       patch(user.id, { rank: "Unranked", rating: null });
@@ -376,7 +369,7 @@ client.on("interactionCreate", async (interaction) => {
         const remainingSeconds = Math.ceil((COOLDOWN_DURATION - (now - lastHostTime)) / 1000);
         const unixTimestamp = Math.floor((now + (COOLDOWN_DURATION - (now - lastHostTime))) / 1000);
         return interaction.reply({
-          content: `⏳ **Cooldown :** You cannot start another game yet! Please wait <t:${unixTimestamp}:R> (${Math.ceil(remainingSeconds / 60)} mins remaining).`,
+          content: `⏳ **Host Cooldown Active:** You cannot start another game yet! Please wait <t:${unixTimestamp}:R> (${Math.ceil(remainingSeconds / 60)} mins remaining).`,
           flags: MessageFlags.Ephemeral,
         });
       }
@@ -445,6 +438,7 @@ client.on("interactionCreate", async (interaction) => {
         t1Pings,
         t2Pings,
         isReady,
+        createdAt: now, // Recorded timestamp for the 3-minute game length check
       });
 
       const playerListDisplay = requiredIds
@@ -476,7 +470,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.editReply({ embeds: [embed], components: [row] });
     }
 
-/* ---------------- /submit HANDLER ---------------- */
+    /* ---------------- /submit HANDLER ---------------- */
     else if (commandName === "submit") {
       await interaction.deferReply();
 
@@ -502,6 +496,17 @@ client.on("interactionCreate", async (interaction) => {
 
       const gameId = activeGame.id.toString();
       const lobby = activeLobbies.get(gameId);
+
+      // 🕒 3-MINUTE GAME LENGTH CHECK
+      const now = Date.now();
+      const gameStartTime = lobby?.createdAt || (activeGame.created_at ? new Date(activeGame.created_at).getTime() : now);
+      const MIN_GAME_DURATION = 3 * 60 * 1000; // 3 minutes
+
+      if (now - gameStartTime < MIN_GAME_DURATION) {
+        return interaction.editReply(
+          "🚫 | Screenshot submission failed : Play the game first before submitting results!"
+        );
+      }
 
       if (lobby && !lobby.isReady) {
         const remainingPings = lobby.requiredIds
@@ -582,7 +587,7 @@ Respond ONLY with raw JSON matching this format:
             rawText = rawText.replace(/^```/, "").replace(/```\$/, "").trim();
           }
 
-          // 🛡️ Robust Extraction: Extract the JSON object substring between `{` and `}`
+          // Extract JSON object substring between { and }
           const firstBrace = rawText.indexOf("{");
           const lastBrace = rawText.lastIndexOf("}");
 
@@ -736,7 +741,6 @@ Respond ONLY with raw JSON matching this format:
         let ratingDisplay = "N/A";
         let rxpHeader = "Placements";
         let rxpDisplay = "Placement Matches 0/5";
-        let kdaDisplay = "N/A";
         let wlDisplay = "0 / 0 (Win Rate: 0%)";
         let robloxTag = "@Unregistered";
 
@@ -758,8 +762,6 @@ Respond ONLY with raw JSON matching this format:
             rxpDisplay = `Placement Matches ${matchCount}/5`;
           }
 
-          kdaDisplay = `${p.kills || 0} / ${p.deaths || 0} / ${p.assists || 0}`;
-
           const totalWins = p.wins || 0;
           const totalLosses = p.losses || 0;
           const totalGames = totalWins + totalLosses;
@@ -773,12 +775,11 @@ Respond ONLY with raw JSON matching this format:
           .setColor(0x0b0b0b)
           .setThumbnail(targetUser.displayAvatarURL({ extension: "png", size: 256 }))
           .addFields(
-            { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
+            { name: "Player", value: `**${displayName}**\n${robloxTag}\n\u200B`, inline: false },
             { name: "Rank", value: `${rankDisplay}`, inline: true },
             { name: "Rating", value: `${ratingDisplay}`, inline: true },
-            { name: rxpHeader, value: `${rxpDisplay}`, inline: true },
-            { name: "K / D / A", value: `${kdaDisplay}`, inline: true },
-            { name: "W / L", value: `${wlDisplay}`, inline: true }
+            { name: rxpHeader, value: `${rxpDisplay}\n\u200B`, inline: true },
+            { name: "W / L", value: `${wlDisplay}`, inline: false }
           );
 
         await interaction.editReply({ embeds: [embed] });
@@ -798,7 +799,7 @@ Respond ONLY with raw JSON matching this format:
       }
 
       const list = matches
-        .map((m) => `• **ID #${m.id}**: Score ${m.score_for}-${m.score_against} | K/D/A: ${m.kills}/${m.deaths}/${m.assists} | RXP: +${m.rxp}`)
+        .map((m) => `• **ID #${m.id}**: Score ${m.score_for}-${m.score_against} | RXP: +${m.rxp}`)
         .join("\n");
 
       await interaction.reply({ content: `**Recent Matches for ${targetUser.username}:**\n${list}` });
