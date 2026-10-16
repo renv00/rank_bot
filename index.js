@@ -129,8 +129,8 @@ const commandDefinitions = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
-    .setName("")
-    .setDescription("View ")
+    .setName("stats")
+    .setDescription("View stats")
     .addUserOption((o) => o.setName("user").setDescription("Player")),
 
   new SlashCommandBuilder()
@@ -145,7 +145,15 @@ const commandDefinitions = [
     .setDescription("Staff: set rank")
     .addUserOption((o) => o.setName("user").setDescription("Player").setRequired(true))
     .addStringOption((o) =>
-      o.setName("rank").setDescription("Rank").setRequired(true).addChoices(...ranks.map((x) => ({ name: x, value: x })))
+      o
+        .setName("rank")
+        .setDescription("Rank")
+        .setRequired(true)
+        .addChoices(
+          ...ranks
+            .filter((x) => typeof x === "string" && x.trim().length > 0)
+            .map((x) => ({ name: x, value: x }))
+        )
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
