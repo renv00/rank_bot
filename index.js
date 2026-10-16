@@ -456,8 +456,11 @@ client.on("interactionCreate", async (interaction) => {
         const base64Image = imageBuffer.toString("base64");
         const mimeType = attachment.contentType || "image/png";
 
+        // Primary strategy: router endpoint; fallback: specific free model
+        const modelToUse = "openrouter/free";
+
         const response = await openai.chat.completions.create({
-          model: "google/gemini-2.0-flash-exp:free",
+          model: modelToUse,
           messages: [
             {
               role: "user",
