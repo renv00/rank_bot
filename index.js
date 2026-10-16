@@ -129,8 +129,8 @@ const commandDefinitions = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
-    .setName("stats")
-    .setDescription("View stats")
+    .setName("")
+    .setDescription("View ")
     .addUserOption((o) => o.setName("user").setDescription("Player")),
 
   new SlashCommandBuilder()
@@ -253,7 +253,7 @@ client.on("interactionCreate", async (interaction) => {
 
   const { commandName, options, user } = interaction;
 
-  // 🛡️ RESTRICTION: Unregistered users can only use /register, /stats, /lb, and /help
+  // 🛡️ RESTRICTION: Unregistered users can only use /register, /, /lb, and /help
   const allowedWithoutRegistration = ["register", "stats", "lb", "help"];
   const registryCheck = getRegistry(user.id);
 
@@ -574,45 +574,53 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
       });
     }
 
-    /* ---------------- /stats ---------------- */
+/* ---------------- /stats ---------------- */
     else if (commandName === "stats") {
-      const targetUser = options.getUser("user") || user;
-      const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
-      
-      const displayName = targetMember?.displayName || targetUser.username;
-      const reg = getRegistry(targetUser.id);
+      // Defer reply immediately so Discord doesn't time out
+      await interaction.deferReply();
 
-      let rankDisplay = "Unranked";
-      let ratingDisplay = "N/A";
-      let rxpDisplay = "N/A";
-      let kdaDisplay = "N/A";
-      let wlDisplay = "N/A";
-      let robloxTag = "@Unregistered";
+      try {
+        const targetUser = options.getUser("user") || user;
+        const targetMember = interaction.guild ? await interaction.guild.members.fetch(targetUser.id).catch(() => null) : null;
+        
+        const displayName = targetMember?.displayName || targetUser.username;
+        const reg = getRegistry(targetUser.id);
 
-      if (reg) {
-        robloxTag = `@${reg.roblox_username}`;
-        const p = player(targetUser.id);
-        rankDisplay = p.rank || "Unranked";
-        ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
-        rxpDisplay = rankDisplay === "Unranked" ? `${p.rxp || 0} / 100` : getRxpDisplay(rankDisplay, p.rxp || 0);
-        kdaDisplay = `${p.kills || 0} / ${p.deaths || 0} / ${p.assists || 0}`;
-        wlDisplay = `${p.wins || 0} / ${p.losses || 0}`;
+        let rankDisplay = "Unranked";
+        let ratingDisplay = "N/A";
+        let rxpDisplay = "N/A";
+        let kdaDisplay = "N/A";
+        let wlDisplay = "N/A";
+        let robloxTag = "@Unregistered";
+
+        if (reg) {
+          robloxTag = `@${reg.roblox_username}`;
+          const p = player(targetUser.id);
+          rankDisplay = p.rank || "Unranked";
+          ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
+          rxpDisplay = rankDisplay === "Unranked" ? `${p.rxp || 0} / 100` : getRxpDisplay(rankDisplay, p.rxp || 0);
+          kdaDisplay = `${p.kills || 0} / ${p.deaths || 0} / ${p.assists || 0}`;
+          wlDisplay = `${p.wins || 0} / ${p.losses || 0}`;
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle("📊  |    Player Statistics")
+          .setColor(0x0b0b0b)
+          .setThumbnail(targetUser.displayAvatarURL({ extension: "png", size: 256 }))
+          .addFields(
+            { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
+            { name: "Rank", value: `${rankDisplay}`, inline: true },
+            { name: "Rating", value: `${ratingDisplay}`, inline: true },
+            { name: "RXP Progress", value: `${rxpDisplay}`, inline: true },
+            { name: "K / D / A", value: `${kdaDisplay}`, inline: true },
+            { name: "W / L", value: `${wlDisplay}`, inline: true }
+          );
+
+        await interaction.editReply({ embeds: [embed] });
+      } catch (err) {
+        console.error("Error in /stats command:", err);
+        await interaction.editReply({ content: "❌ An error occurred while fetching statistics." });
       }
-
-      const embed = new EmbedBuilder()
-        .setTitle("📊  |    Player Statistics")
-        .setColor(0x0b0b0b)
-        .setThumbnail(targetUser.displayAvatarURL({ extension: "png", size: 256 }))
-        .addFields(
-          { name: "Player", value: `**${displayName}**\n${robloxTag}`, inline: false },
-          { name: "Rank", value: `${rankDisplay}`, inline: true },
-          { name: "Rating", value: `${ratingDisplay}`, inline: true },
-          { name: "RXP Progress", value: `${rxpDisplay}`, inline: true },
-          { name: "K / D / A", value: `${kdaDisplay}`, inline: true },
-          { name: "W / L", value: `${wlDisplay}`, inline: true }
-        );
-
-      await interaction.reply({ embeds: [embed] });
     }
 
     /* ---------------- /rm ---------------- */
