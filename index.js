@@ -531,25 +531,31 @@ client.on("interactionCreate", async (interaction) => {
         );
       }
 
-      let analysis;
-      try {
-        const expectedUsernames = activeGame.players.map((p) => p.username).join(", ");
-        const base64Image = imageBuffer.toString("base64");
-        const mimeType = attachment.contentType || "image/png";
+      // 🔄 RETRY LOOP FOR OPENROUTER VISION PARSING
+      let analysis = null;
+      let attempts = 0;
+      const maxAttempts = 3;
 
-        const response = await openai.chat.completions.create({
-          model: "openrouter/free",
-          messages: [
-            {
-              role: "system",
-              content: "You are a precise vision parser. You MUST respond strictly in valid JSON format. Do not include extra text, status messages, or markdown wrappers.",
-            },
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: `Analyze this image carefully.
+      while (attempts < maxAttempts && !analysis) {
+        attempts++;
+        try {
+          const expectedUsernames = activeGame.players.map((p) => p.username).join(", ");
+          const base64Image = imageBuffer.toString("base64");
+          const mimeType = attachment.contentType || "image/png";
+
+          const response = await openai.chat.completions.create({
+            model: "openrouter/free",
+            messages: [
+              {
+                role: "system",
+                content: "You are a precise vision parser. You MUST respond strictly in valid JSON format. Do not include extra text, status messages, or markdown wrappers.",
+              },
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: `Analyze this image carefully.
 1. Is this a Roblox game scoreboard / 'Duel History' results screen?
 2. Is the registered host username '${reg.roblox_username}' clearly visible on the scoreboard?
 3. Are all these lobby participants (${expectedUsernames}) present on the scoreboard?
@@ -557,37 +563,42 @@ client.on("interactionCreate", async (interaction) => {
 
 Respond ONLY with raw JSON matching this format:
 {"isDuelHistory": boolean, "usernameFound": boolean, "allPlayersVerified": boolean, "hostWon": boolean}`,
-                },
-                {
-                  type: "image_url",
-                  image_url: { url: `data:${mimeType};base64,${base64Image}` },
-                },
-              ],
-            },
-          ],
-        });
+                  },
+                  {
+                    type: "image_url",
+                    image_url: { url: `data:${mimeType};base64,${base64Image}` },
+                  },
+                ],
+              },
+            ],
+          });
 
-        let rawText = response.choices[0]?.message?.content?.trim() || "";
+          let rawText = response.choices?.[0]?.message?.content?.trim() || "";
 
-        // Strip markdown blocks if present
-        if (rawText.startsWith("```json")) {
-          rawText = rawText.replace(/^```json/, "").replace(/```$/, "").trim();
-        } else if (rawText.startsWith("```")) {
-          rawText = rawText.replace(/^```/, "").replace(/```\$/, "").trim();
+          // Strip markdown blocks if present
+          if (rawText.startsWith("```json")) {
+            rawText = rawText.replace(/^```json/, "").replace(/```$/, "").trim();
+          } else if (rawText.startsWith("```")) {
+            rawText = rawText.replace(/^```/, "").replace(/```\$/, "").trim();
+          }
+
+          // 🛡️ Robust Extraction: Extract the JSON object substring between `{` and `}`
+          const firstBrace = rawText.indexOf("{");
+          const lastBrace = rawText.lastIndexOf("}");
+
+          if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            rawText = rawText.substring(firstBrace, lastBrace + 1);
+          }
+
+          analysis = JSON.parse(rawText);
+        } catch (err) {
+          console.warn(`⚠️ OpenRouter Vision attempt ${attempts} failed: ${err.message}. Retrying...`);
+          if (attempts >= maxAttempts) {
+            return interaction.editReply(
+              `❌ **AI Vision Error:** The model repeatedly returned an invalid response format. Please try re-submitting the screenshot.`
+            );
+          }
         }
-
-        // 🛡️ Robust Extraction: Extract the JSON object substring between `{` and `}`
-        const firstBrace = rawText.indexOf("{");
-        const lastBrace = rawText.lastIndexOf("}");
-
-        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-          rawText = rawText.substring(firstBrace, lastBrace + 1);
-        }
-
-        analysis = JSON.parse(rawText);
-      } catch (err) {
-        console.error("OpenRouter Vision Parsing Error:", err);
-        return interaction.editReply(`❌ **AI Vision Error:** The model returned invalid response format. Please try re-submitting the screenshot.`);
       }
 
       if (!analysis.isDuelHistory || !analysis.usernameFound || !analysis.allPlayersVerified) {
@@ -683,9 +694,9 @@ Respond ONLY with raw JSON matching this format:
       const loserPings = losers.map((l) => `<@${l.user_id || l.userId}>`).join(", ");
 
       return interaction.editReply(
-        `🏆 **Match Results Verified & Recorded!**\n\n` +
-          `🥇 **Winners (${winnerPings}):**Win Awarded!\n` +
-          `💀 **Losers (${loserPings}):**Loss Recorded.`
+        `🏆 **Match Results**\n\n` +
+          `🥇 **Winners (${winnerPings}):** Win Awarded!\n` +
+          `💀 **Losers (${loserPings}):** Loss Recorded.`
       );
     }
 
