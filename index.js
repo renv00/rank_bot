@@ -202,12 +202,6 @@ client.once("ready", async () => {
   try {
     const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
-    const guilds = await client.guilds.fetch();
-    for (const [guildId] of guilds) {
-      await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), { body: [] });
-    }
-    console.log("🧹 Cleared old guild-specific command duplicates.");
-
     console.log("Syncing global slash commands with Discord...");
     await rest.put(Routes.applicationCommands(client.user.id), {
       body: commandDefinitions.map((cmd) => cmd.toJSON()),
@@ -284,19 +278,8 @@ client.on("interactionCreate", async (interaction) => {
 
   const { commandName, options, user } = interaction;
 
-  // 🛡️ RESTRICTION: Unregistered users can only use /register, /stats, /lb, and /help
-  const allowedWithoutRegistration = ["register", "stats", "lb", "help"];
-  const registryCheck = getRegistry(user.id);
-
-  if (!registryCheck && !allowedWithoutRegistration.includes(commandName)) {
-    return interaction.reply({
-      content: "❌ You must register your Roblox username first! Please run `/register <roblox_username>` before using this command.",
-      flags: MessageFlags.Ephemeral,
-    });
-  }
-
   try {
-    /* ---------------- /help ---------------- */
+    /* ---------------- /help (Guaranteed immediate reply) ---------------- */
     if (commandName === "help") {
       const embed = new EmbedBuilder()
         .setTitle("📖  |    Ranked Bot Command Guide")
@@ -335,11 +318,22 @@ client.on("interactionCreate", async (interaction) => {
         )
         .setFooter({ text: "Run /register <username> to start playing!" });
 
-      await interaction.reply({ embeds: [embed] });
+      return await interaction.reply({ embeds: [embed] });
+    }
+
+    // 🛡️ RESTRICTION CHECK: Require registration for all other restricted commands
+    const allowedWithoutRegistration = ["register", "stats", "lb", "help"];
+    const registryCheck = getRegistry(user.id);
+
+    if (!registryCheck && !allowedWithoutRegistration.includes(commandName)) {
+      return interaction.reply({
+        content: "❌ You must register your Roblox username first! Please run `/register <roblox_username>` before using this command.",
+        flags: MessageFlags.Ephemeral,
+      });
     }
 
     /* ---------------- /register ---------------- */
-    else if (commandName === "register") {
+    if (commandName === "register") {
       const username = options.getString("username", true).trim();
       const existing = getRegistry(user.id);
 
@@ -603,7 +597,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         const matchCount = getPlayerMatchCount(targetId);
 
         if (matchCount < 5) {
-          match(targetId, 5, 0, 5, 2, 2, 25); // Record match entry
+          match(targetId, 5, 0, 5, 2, 2, 25);
           const updatedMatchesCount = getPlayerMatchCount(targetId);
           if (updatedMatchesCount === 5) {
             const userMatches = placements(targetId);
@@ -644,7 +638,7 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
         const matchCount = getPlayerMatchCount(targetId);
 
         if (matchCount < 5) {
-          match(targetId, 0, 5, 2, 5, 2, 0); // Record match entry
+          match(targetId, 0, 5, 2, 5, 2, 0);
           const updatedMatchesCount = getPlayerMatchCount(targetId);
           if (updatedMatchesCount === 5) {
             const userMatches = placements(targetId);
@@ -662,7 +656,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
             patch(targetId, { losses: (p.losses || 0) + 1 });
           }
         } else {
-          // -20 RXP Deduction for Loss
           const newRxp = Math.max(0, (p.rxp || 200) - 20);
           const updatedData = checkRankProgression({
             rank: p.rank || "Amateur",
@@ -736,7 +729,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
           rankDisplay = p.rank || "Unranked";
           ratingDisplay = p.rating !== null && p.rating !== undefined ? p.rating : "N/A";
 
-          // Unranked/Placement Matches tracking
           if (rankDisplay === "Unranked" || matchCount < 5) {
             rxpDisplay = `Placement Matches ${matchCount}/5`;
           } else {
@@ -745,7 +737,6 @@ Respond ONLY with raw valid JSON, no markdown codeblock formatting:
 
           kdaDisplay = `${p.kills || 0} / ${p.deaths || 0} / ${p.assists || 0}`;
 
-          // W/L & Dynamic Win Rate Calculation
           const totalWins = p.wins || 0;
           const totalLosses = p.losses || 0;
           const totalGames = totalWins + totalLosses;
